@@ -2,6 +2,7 @@ from typing import Callable, ParamSpec, Concatenate, List, Optional
 
 import pandas as pd
 import matplotlib.figure as fig
+import matplotlib.pyplot as plt
 
 from . import scanner
 
@@ -82,7 +83,7 @@ class NotebookRunner:
     def _output_image(fig: fig.Figure, name: str, **kwargs) -> None:
         # 画像を指定の名前で保存し、さらにNotebook上に表示する。
         fig.savefig(name, **kwargs)
-        fig.show()
-        fig.clf()
+        plt.show(False)
         fig.clear()
+        plt.close(fig)
         return
