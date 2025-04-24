@@ -31,7 +31,7 @@ class NotebookRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: Optional[List[int]],
+        viewpoints: Optional[List[int]] = None,
     ):
         """
         主にJupyter notebookでの使用を想定したrunner。
