@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, TypeGuard
 
 import pandas as pd
 
@@ -19,3 +19,7 @@ def read_dict(filename: str, key: str, value: str) -> Dict[str, str]:
 
     df = pd.read_csv(filename).astype(str)
     return dict(zip(df[key], df[value]))
+
+
+def is_float(x: float | None) -> TypeGuard[float]:
+    return x is not None
