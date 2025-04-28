@@ -1,24 +1,43 @@
-from typing import Callable, ParamSpec, Concatenate, List, Optional
+from typing import Callable, List, Optional, LiteralString, Protocol
 
 import pandas as pd
 import matplotlib.figure as fig
+import matplotlib.pyplot as plt
 
 from . import scanner
 
-SaveFigKwargs = ParamSpec("SaveFigKwargs")
-OutputImage = Callable[Concatenate[fig.Figure, str, SaveFigKwargs], None]
-"""
-matplotlib.figure.Figureを保存するための関数
 
-Parameters
-----------
-fig
-    保存するFigure
-name
-    保存するファイル名
-kwargs
-    savefigに渡すキーワード引数
-"""
+class Output(Protocol):
+    def image(
+        self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
+    ) -> None:
+        """
+        matplotlib.figure.Figureを保存するための関数
+
+        Parameters
+        ----------
+        fig
+            保存するFigure
+        name
+            保存するファイル名
+        image_type
+            画像タイプ
+            実際の画像保存処理のヒントとなります
+        kwargs
+            savefigに渡すキーワード引数
+        """
+        ...
+
+
+class NotebookOutput:
+    def image(
+        self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
+    ) -> None:
+        # 画像を指定の名前で保存し、さらにNotebook上に表示する。
+        fig.savefig(name, **kwargs)
+        plt.show(False)
+        fig.clear()
+        plt.close(fig)
 
 
 class NotebookRunner:
@@ -30,7 +49,7 @@ class NotebookRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: Optional[List[int]] = [],
+        viewpoints: Optional[List[int]] = None,
     ):
         """
         主にJupyter notebookでの使用を想定したrunner。
@@ -57,7 +76,7 @@ class NotebookRunner:
     def run[Context](
         self,
         ctx: Context,
-        analyze: Callable[[Context, scanner.LaneDataScanner, OutputImage], pd.Series],
+        analyze: Callable[[Context, scanner.LaneDataScanner, Output], pd.Series],
     ) -> pd.DataFrame:
         """
         各レーンごとに画像解析を実行する。
@@ -73,16 +92,6 @@ class NotebookRunner:
             解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
         """
 
-        results = [
-            analyze(ctx, lane, self._output_image) for lane in self.scanner.each_lane()
-        ]
+        output = NotebookOutput()
+        results = [analyze(ctx, lane, output) for lane in self.scanner.each_lane()]
         return pd.DataFrame(results)
-
-    @staticmethod
-    def _output_image(fig: fig.Figure, name: str, **kwargs) -> None:
-        # 画像を指定の名前で保存し、さらにNotebook上に表示する。
-        fig.savefig(name, **kwargs)
-        fig.show()
-        fig.clf()
-        fig.clear()
-        return
