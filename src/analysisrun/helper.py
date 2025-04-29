@@ -9,11 +9,11 @@ def read_dict(filename: str, key: str, value: str) -> Dict[str, str]:
 
     Parameters
     ----------
-    filename : str
+    filename
         読み込むCSVファイルのパス
-    key : str
+    key
         辞書のキーとなるカラム名
-    value : str
+    value
         辞書の値となるカラム名
     """
 
