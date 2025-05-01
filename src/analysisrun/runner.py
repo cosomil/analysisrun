@@ -1,4 +1,5 @@
 from typing import Callable, List, Optional, LiteralString, Protocol
+from dataclasses import dataclass
 
 import pandas as pd
 import matplotlib.figure as fig
@@ -40,6 +41,13 @@ class NotebookOutput:
         plt.close(fig)
 
 
+@dataclass
+class AnalyzeArgs[Context]:
+    ctx: Context
+    lane: scanner.LaneDataScanner
+    output: Output
+
+
 class NotebookRunner:
     """
     主にJupyter notebookでの使用を想定したrunner。
@@ -76,7 +84,7 @@ class NotebookRunner:
     def run[Context](
         self,
         ctx: Context,
-        analyze: Callable[[Context, scanner.LaneDataScanner, Output], pd.Series],
+        analyze: Callable[[AnalyzeArgs[Context]], pd.Series],
     ) -> pd.DataFrame:
         """
         各レーンごとに画像解析を実行する。
@@ -93,5 +101,7 @@ class NotebookRunner:
         """
 
         output = NotebookOutput()
-        results = [analyze(ctx, lane, output) for lane in self.scanner.each_lane()]
+        results = [
+            analyze(AnalyzeArgs(ctx, lane, output)) for lane in self.scanner.each_lane()
+        ]
         return pd.DataFrame(results)
