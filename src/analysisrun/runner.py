@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional, LiteralString, Protocol
+from typing import Callable, List, LiteralString, Protocol
 from dataclasses import dataclass
 from concurrent.futures import ProcessPoolExecutor
 
@@ -31,13 +31,17 @@ class Output(Protocol):
         ...
 
 
-class NotebookOutput:
+class DefaultOutput:
+    def __init__(self, show: bool = False):
+        self._show = show
+
     def image(
         self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
     ) -> None:
         # 画像を指定の名前で保存し、さらにNotebook上に表示する。
         fig.savefig(name, **kwargs)
-        plt.show(False)
+        if self._show:
+            plt.show(False)
         fig.clear()
         plt.close(fig)
 
@@ -58,7 +62,8 @@ class NotebookRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: Optional[List[int]] = None,
+        viewpoints: List[int] = [i + 1 for i in range(12)],
+        output: Output = DefaultOutput(show=True),
     ):
         """
         主にJupyter notebookでの使用を想定したrunner。
@@ -72,14 +77,13 @@ class NotebookRunner:
         viewpoints
             スキャン対象となる視野番号のリスト
         """
-        viewpoints = (
-            viewpoints if viewpoints is not None else [i + 1 for i in range(12)]
-        )
-        self.scanner = scanner.Scanner(
+
+        self._scanner = scanner.Scanner(
             whole_data=whole_data,
             target_data=target_data,
             viewpoints=viewpoints,
         )
+        self._output = output
         return
 
     def run[Context](
@@ -101,9 +105,9 @@ class NotebookRunner:
             解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
         """
 
-        output = NotebookOutput()
         results = [
-            analyze(AnalyzeArgs(ctx, lane, output)) for lane in self.scanner.each_lane()
+            analyze(AnalyzeArgs(ctx, lane, self._output))
+            for lane in self._scanner.each_lane()
         ]
         return pd.DataFrame(results)
 
@@ -117,7 +121,8 @@ class ParallelRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: Optional[List[int]] = None,
+        viewpoints: List[int] = [i + 1 for i in range(12)],
+        output: Output = DefaultOutput(show=False),
     ):
         """
         マルチプロセスで並列処理するrunner。
@@ -131,14 +136,13 @@ class ParallelRunner:
         viewpoints
             スキャン対象となる視野番号のリスト
         """
-        viewpoints = (
-            viewpoints if viewpoints is not None else [i + 1 for i in range(12)]
-        )
-        self.scanner = scanner.Scanner(
+
+        self._scanner = scanner.Scanner(
             whole_data=whole_data,
             target_data=target_data,
             viewpoints=viewpoints,
         )
+        self._output = output
         return
 
     def run[Context](
@@ -160,10 +164,12 @@ class ParallelRunner:
             解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
         """
 
-        output = NotebookOutput()
         with ProcessPoolExecutor() as executor:
             results = executor.map(
                 analyze,
-                [AnalyzeArgs(ctx, lane, output) for lane in self.scanner.each_lane()],
+                [
+                    AnalyzeArgs(ctx, lane, self._output)
+                    for lane in self._scanner.each_lane()
+                ],
             )
         return pd.DataFrame(results)
