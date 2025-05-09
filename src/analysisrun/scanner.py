@@ -1,6 +1,9 @@
-from typing import Optional, Generator, Any, List
+from typing import Optional, Generator, Any, List, Callable
 
 import pandas as pd
+
+
+Filter = Callable[[pd.DataFrame], pd.Series]
 
 
 class LaneDataScanner:
@@ -37,19 +40,19 @@ class LaneDataScanner:
         return
 
     def each_viewpoint(
-        self, _filter: Optional[pd.Series] = None, skip_empty_viewpoints: bool = False
+        self, filter: Optional[Filter] = None, skip_empty_viewpoints: bool = False
     ) -> Generator[pd.DataFrame, Any, None]:
         """
         視野ごとのデータを抽出するジェネレータ
 
         Parameters
         ----------
-        _filter
+        filter
             フィルタ条件
         skip_empty_viewpoints
             データのない視野をスキップするかどうか
         """
-        target_data = self.data if _filter is None else self.data[_filter]
+        target_data = self.data if filter is None else self.data[filter(self.data)]
 
         for view in self.viewpoints:
             d = target_data[target_data.MultiPointIndex == view]
@@ -90,19 +93,19 @@ class Scanner:
         self.viewpoints = viewpoints
         return
 
-    def each_lane(self, _filter: Optional[pd.Series] = None):
+    def each_lane(self, filter: Optional[Filter] = None):
         """
         各レーンのデータを読み込むLaneDataScannerを生成するジェネレータ
 
         Parameters
         ----------
-        _filter
+        filter
             フィルタ条件
         """
         for name in self.target_data:
             data = self.whole_data[self.whole_data["Data"] == name]
 
-            target_data = data if _filter is None else data[_filter]
+            target_data = data if filter is None else data[filter(data)]
 
             image_analysis_method = (
                 "" if len(data) == 0 else data.iloc[0, :].loc["ImageAnalysisMethod"]

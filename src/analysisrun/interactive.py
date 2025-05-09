@@ -1,26 +1,8 @@
-from typing import NamedTuple, TypeVar, Type, Any, get_origin, Optional
+from typing import TypeVar, Type, Any, get_origin, Optional
 import inspect
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticUndefined
-
-
-class EvalRange(NamedTuple):
-    x: int
-    y: int
-
-
-class Sample(BaseModel):
-    num: int = Field(default=10, description="Number of elements")
-    target_filename: str = Field(..., description="Target filename")
-    eval_range: EvalRange = Field(
-        default=EvalRange(x=10, y=10), description="Evaluation range"
-    )
-    valid: bool = Field(..., description="Validity")
-    pair: tuple[float, float] = Field(
-        default=(0.0, 0.0), description="Pair of float values"
-    )
-    arbitrary_tuple: tuple
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -202,8 +184,3 @@ def scan_model_input(model_class: Type[T]) -> T:
                 valid_inputs = {}  # 有効な入力をリセット
 
             print()
-
-
-data = scan_model_input(Sample)
-
-print(data)
