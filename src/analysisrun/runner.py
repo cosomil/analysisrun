@@ -14,19 +14,19 @@ class Output(Protocol):
         self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
     ) -> None:
         """
-        matplotlib.figure.Figureを保存するための関数
+        matplotlib.figure.Figureを保存するためのメソッド。
 
         Parameters
         ----------
         fig
-            保存するFigure
+            保存するFigure。
         name
-            保存するファイル名
+            保存するファイル名。
         image_type
-            画像タイプ
-            実際の画像保存処理のヒントとなります
+            画像タイプ。
+            実際の画像保存処理のヒントとなります。
         kwargs
-            savefigに渡すキーワード引数
+            savefigに渡すキーワード引数。
         """
         ...
 
@@ -49,8 +49,18 @@ class DefaultOutput:
 @dataclass
 class AnalyzeArgs[Context]:
     ctx: Context
+    """
+    解析全体に関わる情報を格納するコンテキストオブジェクト。
+    dataclassを使用するのが望ましい。
+    """
     lane: scanner.LaneDataScanner
+    """
+    対象となるレーンのデータを探索するためのスキャナー。
+    """
     output: Output
+    """
+    画像を保存するためのOutput実装。
+    """
 
 
 class NotebookRunner:
