@@ -1,4 +1,4 @@
-from typing import Callable, List, LiteralString, Protocol
+from typing import Callable, List, LiteralString, Protocol, Optional
 from dataclasses import dataclass
 from concurrent.futures import ProcessPoolExecutor
 
@@ -77,8 +77,8 @@ class NotebookRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: List[int] = [i + 1 for i in range(12)],
-        output: Output = DefaultOutput(show=True),
+        viewpoints: Optional[List[int]] = None,
+        output: Optional[Output] = None,
     ):
         """
         主にJupyter notebookでの使用を想定したrunner。
@@ -96,9 +96,9 @@ class NotebookRunner:
         self._scanner = scanner.Scanner(
             whole_data=whole_data,
             target_data=target_data,
-            viewpoints=viewpoints,
+            viewpoints=viewpoints or [i + 1 for i in range(12)],
         )
-        self._output = output
+        self._output = output or DefaultOutput(show=True)
         return
 
     def run[Context](
@@ -136,8 +136,8 @@ class ParallelRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: List[int] = [i + 1 for i in range(12)],
-        output: Output = DefaultOutput(show=False),
+        viewpoints: Optional[List[int]] = None,
+        output: Optional[Output] = None,
     ):
         """
         マルチプロセスで並列処理するrunner。
@@ -155,9 +155,9 @@ class ParallelRunner:
         self._scanner = scanner.Scanner(
             whole_data=whole_data,
             target_data=target_data,
-            viewpoints=viewpoints,
+            viewpoints=viewpoints or [i + 1 for i in range(12)],
         )
-        self._output = output
+        self._output = output or DefaultOutput(show=False)
         return
 
     def run[Context](
