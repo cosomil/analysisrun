@@ -1,12 +1,9 @@
-from typing import Optional, Generator, Any, List, Callable
+from typing import List
 
 import pandas as pd
 
 
-Filter = Callable[[pd.DataFrame], pd.Series]
-
-
-class LaneDataScanner:
+class Views:
     """
     レーンのデータを視野ごとにスキャンする
     """
@@ -17,6 +14,7 @@ class LaneDataScanner:
         image_analysis_method: str,
         data: pd.DataFrame,
         viewpoints: List[int],
+        skip_empty_viewpoints: bool = False,
     ) -> None:
         """
         レーンのデータを視野ごとにスキャンする
@@ -31,36 +29,39 @@ class LaneDataScanner:
             対象データ
         viewpoints
             スキャン対象となる視野番号のリスト
-        """
-
-        self.name = name
-        self.image_analysis_method = image_analysis_method
-        self.data = data
-        self.viewpoints = viewpoints
-        return
-
-    def each_viewpoint(
-        self, filter: Optional[Filter] = None, skip_empty_viewpoints: bool = False
-    ) -> Generator[pd.DataFrame, Any, None]:
-        """
-        視野ごとのデータを抽出するジェネレータ
-
-        Parameters
-        ----------
-        filter
-            フィルタ条件
         skip_empty_viewpoints
             データのない視野をスキップするかどうか
         """
-        target_data = self.data if filter is None else self.data[filter(self.data)]
 
-        for view in self.viewpoints:
-            d = target_data[target_data.MultiPointIndex == view]
-            if len(d) > 0 or not skip_empty_viewpoints:
-                yield d
+        self.data_name = name
+        self.image_analysis_method = image_analysis_method
+        self.data = data
+        self.viewpoints = viewpoints
+        self.__skip_empty_viewpoints = skip_empty_viewpoints
+        return
+
+    def skip_empty_viewpoints(self):
+        """
+        データのない視野をスキップするスキャナーを作成する
+        """
+        return Views(
+            name=self.data_name,
+            image_analysis_method=self.image_analysis_method,
+            data=self.data,
+            viewpoints=self.viewpoints,
+            skip_empty_viewpoints=True,
+        )
+
+    def __iter__(self):
+        return (
+            d
+            for v in self.viewpoints
+            if len(d := self.data[self.data.MultiPointIndex == v]) > 0
+            or not self.__skip_empty_viewpoints
+        )
 
 
-class Scanner:
+class Lanes:
     """
     データ全体をレーンごとにスキャンする
     """
@@ -93,27 +94,15 @@ class Scanner:
         self.viewpoints = viewpoints
         return
 
-    def each_lane(self, filter: Optional[Filter] = None):
-        """
-        各レーンのデータを読み込むLaneDataScannerを生成するジェネレータ
-
-        Parameters
-        ----------
-        filter
-            フィルタ条件
-        """
-        for name in self.target_data:
-            data = self.whole_data[self.whole_data["Data"] == name]
-
-            target_data = data if filter is None else data[filter(data)]
-
-            image_analysis_method = (
-                "" if len(data) == 0 else data.iloc[0, :].loc["ImageAnalysisMethod"]
-            )
-
-            yield LaneDataScanner(
+    def __iter__(self):
+        return (
+            Views(
                 name=name,
-                image_analysis_method=image_analysis_method,
-                data=target_data,
+                data=(data := self.whole_data[self.whole_data["Data"] == name]),
+                image_analysis_method=""
+                if len(data) == 0
+                else data.iloc[0, :].loc["ImageAnalysisMethod"],
                 viewpoints=self.viewpoints,
             )
+            for name in self.target_data
+        )

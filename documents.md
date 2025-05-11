@@ -21,7 +21,7 @@ shoe=Trueの場合、保存後にNotebookへの表示を実行する。
 
 - `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
     dataclassを使用するのが望ましい。
-- `lane: scanner.LaneDataScanner`: 対象となるレーンのデータを探索するためのスキャナー。
+- `views: scanner.Views`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
 - `output: Output`: 画像を保存するためのOutput実装。
 
 ## `class NotebookRunner`
@@ -69,28 +69,17 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 
 # analysisrun.scanner
 
-## `class LaneDataScanner`
+## `class Views`
 
 レーンのデータを視野ごとにスキャンする
 
-### `LaneDataScanner.each_viewpoint(filter: Optional[Filter], skip_empty_viewpoints: bool) -> Generator[pd.DataFrame, Any, None]`
+### `Views.skip_empty_viewpoints()`
 
-視野ごとのデータを抽出するジェネレータ
+データのない視野をスキップするスキャナーを作成する
 
-**引数**
-- `filter: Optional[Filter]`: フィルタ条件
-- `skip_empty_viewpoints: bool`: データのない視野をスキップするかどうか
-
-## `class Scanner`
+## `class Lanes`
 
 データ全体をレーンごとにスキャンする
-
-### `Scanner.each_lane(filter: Optional[Filter])`
-
-各レーンのデータを読み込むLaneDataScannerを生成するジェネレータ
-
-**引数**
-- `filter: Optional[Filter]`: フィルタ条件
 
 ---
 
