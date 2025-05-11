@@ -1,21 +1,19 @@
-<!-- uv run ./scripts/docs.py ./src/analysisrun -o documents.md -->
 # analysisrun.runner
 
 ## `class Output(Protocol)`
 
-### `Output.image(fig: fig.Figure, name: str, image_type: LiteralString) -> None`
-
-matplotlib.figure.Figureを保存するためのメソッド。
+matplotlib.figure.Figureを保存する。
 
 **引数**
-- `fig: fig.Figure`: 保存するFigure。
-- `name: str`: 保存するファイル名。
-- `image_type: LiteralString`: 画像タイプ。 実際の画像保存処理のヒントとなります。
+- `fig`: 保存するFigure。
+- `name`: 保存するファイル名。
+- `image_type`: 画像タイプ。 実際の画像保存処理のヒントとなります。
 - `kwargs`: savefigに渡すキーワード引数。
 
 ## `class DefaultOutput`
 
-### `DefaultOutput.image(fig: fig.Figure, name: str, image_type: LiteralString) -> None`
+matplotlib.figure.Figureを保存する。
+shoe=Trueの場合、保存後にNotebookへの表示を実行する。
 
 ## `class AnalyzeArgs`
 
