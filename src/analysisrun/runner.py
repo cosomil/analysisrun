@@ -10,28 +10,33 @@ from . import scanner
 
 
 class Output(Protocol):
+    """
+    matplotlib.figure.Figureを保存する。
+
+    Parameters
+    ----------
+    fig
+        保存するFigure。
+    name
+        保存するファイル名。
+    image_type
+        画像タイプ。
+        実際の画像保存処理のヒントとなります。
+    kwargs
+        savefigに渡すキーワード引数。
+    """
+
     def __call__(
         self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
-    ) -> None:
-        """
-        matplotlib.figure.Figureを保存するためのメソッド。
-
-        Parameters
-        ----------
-        fig
-            保存するFigure。
-        name
-            保存するファイル名。
-        image_type
-            画像タイプ。
-            実際の画像保存処理のヒントとなります。
-        kwargs
-            savefigに渡すキーワード引数。
-        """
-        ...
+    ) -> None: ...
 
 
 class DefaultOutput:
+    """
+    matplotlib.figure.Figureを保存する。
+    shoe=Trueの場合、保存後にNotebookへの表示を実行する。
+    """
+
     def __init__(self, show: bool = False):
         self._show = show
 
