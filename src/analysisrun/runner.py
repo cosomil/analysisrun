@@ -10,7 +10,7 @@ from . import scanner
 
 
 class Output(Protocol):
-    def image(
+    def __call__(
         self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
     ) -> None:
         """
@@ -35,7 +35,7 @@ class DefaultOutput:
     def __init__(self, show: bool = False):
         self._show = show
 
-    def image(
+    def __call__(
         self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
     ) -> None:
         # 画像を指定の名前で保存し、さらにNotebook上に表示する。
