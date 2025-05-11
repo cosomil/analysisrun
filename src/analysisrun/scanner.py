@@ -6,7 +6,7 @@ import pandas as pd
 Filter = Callable[[pd.DataFrame], pd.Series]
 
 
-class LaneDataScanner:
+class Views:
     """
     レーンのデータを視野ごとにスキャンする
     """
@@ -47,7 +47,7 @@ class LaneDataScanner:
         """
         データのない視野をスキップするスキャナーを作成する
         """
-        return LaneDataScanner(
+        return Views(
             name=self.name,
             image_analysis_method=self.image_analysis_method,
             data=self.data,
@@ -64,7 +64,7 @@ class LaneDataScanner:
         )
 
 
-class Scanner:
+class Lanes:
     """
     データ全体をレーンごとにスキャンする
     """
@@ -105,7 +105,7 @@ class Scanner:
                 "" if len(data) == 0 else data.iloc[0, :].loc["ImageAnalysisMethod"]
             )
 
-            yield LaneDataScanner(
+            yield Views(
                 name=name,
                 image_analysis_method=image_analysis_method,
                 data=data,

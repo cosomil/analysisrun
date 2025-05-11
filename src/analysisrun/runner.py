@@ -58,9 +58,9 @@ class AnalyzeArgs[Context]:
     解析全体に関わる情報を格納するコンテキストオブジェクト。
     dataclassを使用するのが望ましい。
     """
-    lane: scanner.LaneDataScanner
+    views: scanner.Views
     """
-    対象となるレーンのデータを探索するためのスキャナー。
+    対象となるレーンのデータを視野ごとに探索するためのスキャナー。
     """
     output: Output
     """
@@ -93,7 +93,7 @@ class NotebookRunner:
             スキャン対象となる視野番号のリスト
         """
 
-        self._scanner = scanner.Scanner(
+        self._lanes = scanner.Lanes(
             whole_data=whole_data,
             target_data=target_data,
             viewpoints=viewpoints or [i + 1 for i in range(12)],
@@ -121,7 +121,7 @@ class NotebookRunner:
         """
 
         results = [
-            analyze(AnalyzeArgs(ctx, lane, self._output)) for lane in self._scanner
+            analyze(AnalyzeArgs(ctx, lane, self._output)) for lane in self._lanes
         ]
         return pd.DataFrame(results)
 
@@ -151,7 +151,7 @@ class ParallelRunner:
             スキャン対象となる視野番号のリスト
         """
 
-        self._scanner = scanner.Scanner(
+        self._lanes = scanner.Lanes(
             whole_data=whole_data,
             target_data=target_data,
             viewpoints=viewpoints or [i + 1 for i in range(12)],
@@ -181,6 +181,6 @@ class ParallelRunner:
         with ProcessPoolExecutor() as executor:
             results = executor.map(
                 analyze,
-                [AnalyzeArgs(ctx, lane, self._output) for lane in self._scanner],
+                [AnalyzeArgs(ctx, lane, self._output) for lane in self._lanes],
             )
         return pd.DataFrame(results)
