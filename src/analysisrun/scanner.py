@@ -36,7 +36,7 @@ class Views:
             データのない視野をスキップするかどうか
         """
 
-        self.name = name
+        self.data_name = name
         self.image_analysis_method = image_analysis_method
         self.data = data
         self.viewpoints = viewpoints
@@ -48,7 +48,7 @@ class Views:
         データのない視野をスキップするスキャナーを作成する
         """
         return Views(
-            name=self.name,
+            name=self.data_name,
             image_analysis_method=self.image_analysis_method,
             data=self.data,
             viewpoints=self.viewpoints,
