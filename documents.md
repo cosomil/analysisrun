@@ -73,24 +73,13 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 
 レーンのデータを視野ごとにスキャンする
 
-### `LaneDataScanner.each_viewpoint(filter: Optional[Filter], skip_empty_viewpoints: bool) -> Generator[pd.DataFrame, Any, None]`
+### `LaneDataScanner.skip_empty_viewpoints()`
 
-視野ごとのデータを抽出するジェネレータ
-
-**引数**
-- `filter: Optional[Filter]`: フィルタ条件
-- `skip_empty_viewpoints: bool`: データのない視野をスキップするかどうか
+データのない視野をスキップするスキャナーを作成する
 
 ## `class Scanner`
 
 データ全体をレーンごとにスキャンする
-
-### `Scanner.each_lane(filter: Optional[Filter])`
-
-各レーンのデータを読み込むLaneDataScannerを生成するジェネレータ
-
-**引数**
-- `filter: Optional[Filter]`: フィルタ条件
 
 ---
 

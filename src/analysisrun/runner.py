@@ -121,8 +121,7 @@ class NotebookRunner:
         """
 
         results = [
-            analyze(AnalyzeArgs(ctx, lane, self._output))
-            for lane in self._scanner.each_lane()
+            analyze(AnalyzeArgs(ctx, lane, self._output)) for lane in self._scanner
         ]
         return pd.DataFrame(results)
 
@@ -182,9 +181,6 @@ class ParallelRunner:
         with ProcessPoolExecutor() as executor:
             results = executor.map(
                 analyze,
-                [
-                    AnalyzeArgs(ctx, lane, self._output)
-                    for lane in self._scanner.each_lane()
-                ],
+                [AnalyzeArgs(ctx, lane, self._output) for lane in self._scanner],
             )
         return pd.DataFrame(results)
