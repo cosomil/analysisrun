@@ -1,9 +1,6 @@
-from typing import Generator, List, Callable
+from typing import List
 
 import pandas as pd
-
-
-Filter = Callable[[pd.DataFrame], pd.Series]
 
 
 class Views:
@@ -55,7 +52,7 @@ class Views:
             skip_empty_viewpoints=True,
         )
 
-    def __iter__(self) -> Generator[pd.DataFrame, None, None]:
+    def __iter__(self):
         return (
             d
             for v in self.viewpoints
@@ -98,16 +95,14 @@ class Lanes:
         return
 
     def __iter__(self):
-        for name in self.target_data:
-            data = self.whole_data[self.whole_data["Data"] == name]
-
-            image_analysis_method = (
-                "" if len(data) == 0 else data.iloc[0, :].loc["ImageAnalysisMethod"]
-            )
-
-            yield Views(
+        return (
+            Views(
                 name=name,
-                image_analysis_method=image_analysis_method,
-                data=data,
+                data=(data := self.whole_data[self.whole_data["Data"] == name]),
+                image_analysis_method=""
+                if len(data) == 0
+                else data.iloc[0, :].loc["ImageAnalysisMethod"],
                 viewpoints=self.viewpoints,
             )
+            for name in self.target_data
+        )
