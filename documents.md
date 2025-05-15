@@ -20,7 +20,6 @@ shoe=Trueの場合、保存後にNotebookへの表示を実行する。
 **メンバ変数**
 
 - `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-    dataclassを使用するのが望ましい。
 - `views: scanner.Views`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
 - `output: Output`: 画像を保存するためのOutput実装。
 
@@ -34,7 +33,7 @@ shoe=Trueの場合、保存後にNotebookへの表示を実行する。
 レーンごとの解析結果を結合したDataFrameを返す。
 
 **引数**
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。 dataclassを使用するのが望ましい。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
 - `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数。 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
 
 ## `class ParallelRunner`
@@ -47,7 +46,7 @@ shoe=Trueの場合、保存後にNotebookへの表示を実行する。
 レーンごとの解析結果を結合したDataFrameを返す。
 
 **引数**
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。 dataclassを使用するのが望ましい。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
 - `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数。 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
 
 ---
