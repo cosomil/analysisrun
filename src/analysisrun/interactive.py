@@ -1,8 +1,9 @@
 from typing import TypeVar, Type, Any, get_origin, Optional
 import inspect
+from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
-from pydantic_core import PydanticUndefined
+from pydantic import BaseModel, ValidationError, GetCoreSchemaHandler
+from pydantic_core import PydanticUndefined, core_schema
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -167,10 +168,21 @@ def scan_model_input(model_class: Type[T]) -> T:
             error_fields = set()
 
             if isinstance(e, ValidationError):
+                # エラーメッセージをフィールドごとにグループ化
+                field_errors = {}
                 for error in e.errors():
                     if error["loc"]:
-                        # エラーフィールドを追加
-                        error_fields.add(error["loc"][0])
+                        field_name = error["loc"][0]
+                        error_fields.add(field_name)
+                        if field_name not in field_errors:
+                            field_errors[field_name] = []
+                        field_errors[field_name].append(error["msg"])
+
+                # エラー内容を表示
+                for field_name, errors in field_errors.items():
+                    print(f"  {field_name}:")
+                    for error_msg in errors:
+                        print(f"    - {error_msg}")
 
                 # エラーがないフィールドの値を保存
                 for field_name, value in field_values.items():
@@ -180,7 +192,56 @@ def scan_model_input(model_class: Type[T]) -> T:
                 print("エラーとなった項目を再入力してください")
             else:
                 # その他の例外の場合は全フィールドを再入力
-                print("エラーが発生しました。すべての項目を再入力してください")
+                print(f"エラーが発生しました: {str(e)}")
+                print("すべての項目を再入力してください")
                 valid_inputs = {}  # 有効な入力をリセット
 
             print()
+
+
+class FilePath(str):
+    """
+    ファイルパスを表す文字列型。バリデーションの際にファイルの存在を確認します。
+    文字列の前後にシングルクォートがある場合は削除します。
+    """
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+        def validate(v):
+            if not isinstance(v, str):
+                return v
+            if v.startswith("'") and v.endswith("'"):
+                v = v[1:-1]
+            p = Path(v)
+            if not p.exists():
+                raise ValueError(f"ファイルが存在しません: '{v}'")
+            if not p.is_file():
+                raise ValueError(f"ファイルのパスを指定してください: '{v}'")
+            return v
+
+        return core_schema.no_info_plain_validator_function(validate)
+
+
+class DirectoryPath(str):
+    """
+    ディレクトリパスを表す文字列型。バリデーションの際にディレクトリの存在を確認します。
+    文字列の前後にシングルクォートがある場合は削除します。
+    """
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+        def validate(v):
+            if not isinstance(v, str):
+                return v
+            if v.startswith("'") and v.endswith("'"):
+                v = v[1:-1]
+            p = Path(v)
+            if not p.exists():
+                raise ValueError(f"ディレクトリが存在しません: '{v}'")
+            if not p.is_dir():
+                raise ValueError(
+                    f"ディレクトリ（フォルダー）のパスを指定してください: '{v}'"
+                )
+            return v
+
+        return core_schema.no_info_plain_validator_function(validate)
