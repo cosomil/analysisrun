@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.0.2](https://github.com/cosomil/analysisrun/compare/v0.0.1...v0.0.2) - 2025-05-19
+- feat: ファイルパス、ディレクトリパスの入力を受けるための型を追加 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/17
+
 ## [v0.0.1](https://github.com/cosomil/analysisrun/commits/v0.0.1) - 2025-05-15
 - NotebookRunnerを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/1
 - Fix notebook runner by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/2
