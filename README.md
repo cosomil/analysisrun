@@ -15,7 +15,7 @@ $ uv add git+https://github.com/cosomil/analysisrun --tag 0.0.1
 ### 必要条件
 - PowerShellがインストールされている
 - uvがインストールされている
-  - `winget install --id=astral-sh.uv -e`
+  - `powershell -ExecutionPolicy ByPass -c "irm <https://astral.sh/uv/install.ps1> | iex"`
 
 ### インストール方法
 `scripts/install.ps1`を実行すると、デスクトップに「Pythonスクリプトを実行する」というショートカットを作成します。
