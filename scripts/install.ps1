@@ -1,15 +1,20 @@
-# uvのプロジェクトとして作成されたPythonスクリプトを実行するPowerShellスクリプトのショートカットをデスクトップに作成する。
+﻿# uvのプロジェクトとして作成されたPythonスクリプトを実行するPowerShellスクリプトのショートカットをデスクトップに作成する。
 
-# 現在のスクリプトのディレクトリを取得
-$currentDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-# exec.ps1 のパスを設定
-$scriptPath = Join-Path -Path $currentDir -ChildPath "exec.ps1"
+Add-Type -AssemblyName System.Windows.Forms
 
-# パスの検証
-if (-not (Test-Path -Path $scriptPath -PathType Leaf)) {
-    Write-Error "実行ファイル '$scriptPath' が存在しません。同じディレクトリにexec.ps1があることを確認してください。"
-    exit 1
+$folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$folderDialog.Description = "スクリプトを保存するフォルダーを選択してください"
+if ($folderDialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+    Write-Host "キャンセルされました"
+    exit
 }
+$targetFolder = $folderDialog.SelectedPath
+
+# exec.ps1スクリプトを指定されたフォルダーにダウンロード
+$scriptUrl = "https://raw.githubusercontent.com/cosomil/analysisrun/refs/heads/main/scripts/exec.ps1"
+$scriptName = "exec.ps1"
+$scriptPath = Join-Path $targetFolder $scriptName
+Invoke-WebRequest -Uri $scriptUrl -OutFile $scriptPath
 
 # デフォルトのショートカット名を設定
 $defaultShortcutName = "Pythonスクリプトを実行"
