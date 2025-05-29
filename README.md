@@ -4,9 +4,10 @@
 ## ライブラリ
 ### インストール方法
 ```shell
-$ uv add git+https://github.com/cosomil/analysisrun --tag 0.0.1
+$ uv add git+https://github.com/cosomil/analysisrun --tag v0.0.2
 ```
-※適切なタグを選択してください。
+※適切なバージョン（タグ）を選択してください。
+※GitHubで公開されたパッケージをインストールするためには、システムにGitがインストールされている必要があります。
 
 ### 使用方法
 [ドキュメント](documents.md)を参照。
@@ -14,6 +15,8 @@ $ uv add git+https://github.com/cosomil/analysisrun --tag 0.0.1
 ## Pythonスクリプト実行ヘルパー
 ### 必要条件
 - PowerShellがインストールされている
+- Gitがインストールされている
+  - 参考: https://qiita.com/takeru-hirai/items/4fbe6593d42f9a844b1c
 - uvがインストールされている
   - `powershell -ExecutionPolicy ByPass -c "irm <https://astral.sh/uv/install.ps1> | iex"`
 
