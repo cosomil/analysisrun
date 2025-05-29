@@ -18,7 +18,7 @@ $ uv add git+https://github.com/cosomil/analysisrun --tag v0.0.2
 - Gitがインストールされている
   - 参考: https://qiita.com/takeru-hirai/items/4fbe6593d42f9a844b1c
 - uvがインストールされている
-  - `powershell -ExecutionPolicy ByPass -c "irm <https://astral.sh/uv/install.ps1> | iex"`
+  - `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
   - [uv(Pythonのパッケージマネージャ)の使い方](https://www.notion.so/cosomil/uv-Python-200ac7552b3c80f19190e94a67daf175)
 
 ### インストール方法
