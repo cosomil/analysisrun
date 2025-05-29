@@ -1,4 +1,4 @@
-﻿# uvのプロジェクトとして作成されたPythonスクリプトを実行するPowerShellスクリプトのショートカットをデスクトップに作成する。
+# uvのプロジェクトとして作成されたPythonスクリプトを実行するPowerShellスクリプトのショートカットをデスクトップに作成する。
 
 Add-Type -AssemblyName System.Windows.Forms
 
