@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.0.3](https://github.com/cosomil/analysisrun/compare/v0.0.2...v0.0.3) - 2025-06-05
+- uvのインストールコマンドを変更 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/19
+- ドキュメント更新 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/21
+- chore: install.ps1のみBOMを削除 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/22
+- docs: uvのインストールコマンドを修正 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/23
+- chore: "視野"の英語表現を"field"に変更 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/25
+
 ## [v0.0.2](https://github.com/cosomil/analysisrun/compare/v0.0.1...v0.0.2) - 2025-05-19
 - feat: ファイルパス、ディレクトリパスの入力を受けるための型を追加 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/17
 
