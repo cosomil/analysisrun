@@ -20,7 +20,7 @@ shoe=Trueの場合、保存後にNotebookへの表示を実行する。
 **メンバ変数**
 
 - `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `views: scanner.Views`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
+- `fields: scanner.Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
 - `output: Output`: 画像を保存するためのOutput実装。
 
 ## `class NotebookRunner`
@@ -68,11 +68,11 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 
 # analysisrun.scanner
 
-## `class Views`
+## `class Fields`
 
 レーンのデータを視野ごとにスキャンする
 
-### `Views.skip_empty_viewpoints()`
+### `Fields.skip_empty_fields()`
 
 データのない視野をスキップするスキャナーを作成する
 

@@ -57,7 +57,7 @@ class AnalyzeArgs[Context]:
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト。
     """
-    views: scanner.Views
+    fields: scanner.Fields
     """
     対象となるレーンのデータを視野ごとに探索するためのスキャナー。
     """
@@ -76,7 +76,7 @@ class NotebookRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: Optional[List[int]] = None,
+        field_numbers: Optional[List[int]] = None,
         output: Optional[Output] = None,
     ):
         """
@@ -88,14 +88,14 @@ class NotebookRunner:
             全データ
         target_data
             対象データのリスト
-        viewpoints
+        field_numbers
             スキャン対象となる視野番号のリスト
         """
 
         self._lanes = scanner.Lanes(
             whole_data=whole_data,
             target_data=target_data,
-            viewpoints=viewpoints or [i + 1 for i in range(12)],
+            field_numbers=field_numbers or [i + 1 for i in range(12)],
         )
         self._output = output or DefaultOutput(show=True)
         return
@@ -133,7 +133,7 @@ class ParallelRunner:
         self,
         whole_data: pd.DataFrame,
         target_data: List[str],
-        viewpoints: Optional[List[int]] = None,
+        field_numbers: Optional[List[int]] = None,
         output: Optional[Output] = None,
     ):
         """
@@ -145,14 +145,14 @@ class ParallelRunner:
             全データ
         target_data
             対象データのリスト
-        viewpoints
+        field_numbers
             スキャン対象となる視野番号のリスト
         """
 
         self._lanes = scanner.Lanes(
             whole_data=whole_data,
             target_data=target_data,
-            viewpoints=viewpoints or [i + 1 for i in range(12)],
+            field_numbers=field_numbers or [i + 1 for i in range(12)],
         )
         self._output = output or DefaultOutput(show=False)
         return
