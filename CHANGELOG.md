@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.0.4](https://github.com/cosomil/analysisrun/compare/v0.0.3...v0.0.4) - 2025-06-06
+- docs: インストールコマンドを更新 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/26
+- feat: `Runner`に各レーンの解析完了後のpostprocessを行う機能を追加 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/28
+- docs: インストールコマンドを更新 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/30
+
 ## [v0.0.3](https://github.com/cosomil/analysisrun/compare/v0.0.2...v0.0.3) - 2025-06-05
 - uvのインストールコマンドを変更 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/19
 - ドキュメント更新 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/21
