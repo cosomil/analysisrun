@@ -1,10 +1,10 @@
-from typing import Callable, List, LiteralString, Protocol, Optional
-from dataclasses import dataclass
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
+from typing import Callable, List, LiteralString, Optional, Protocol
 
-import pandas as pd
 import matplotlib.figure as fig
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from . import scanner
 
@@ -34,7 +34,7 @@ class Output(Protocol):
 class DefaultOutput:
     """
     matplotlib.figure.Figureを保存する。
-    shoe=Trueの場合、保存後にNotebookへの表示を実行する。
+    show=Trueの場合、保存後にNotebookへの表示を実行する。
     """
 
     def __init__(self, show: bool = False):
@@ -64,6 +64,18 @@ class AnalyzeArgs[Context]:
     output: Output
     """
     画像を保存するためのOutput実装。
+    """
+
+
+@dataclass
+class PostprocessArgs[Context]:
+    ctx: Context
+    """
+    解析全体に関わる情報を格納するコンテキストオブジェクト。
+    """
+    analysis_results: pd.DataFrame
+    """
+    解析結果を格納したDataFrame。
     """
 
 
@@ -104,6 +116,9 @@ class NotebookRunner:
         self,
         ctx: Context,
         analyze: Callable[[AnalyzeArgs[Context]], pd.Series],
+        postprocess: Optional[
+            Callable[[PostprocessArgs[Context]], pd.DataFrame]
+        ] = None,
     ) -> pd.DataFrame:
         """
         各レーンごとに画像解析を実行する。
@@ -116,12 +131,20 @@ class NotebookRunner:
         analyze
             解析関数。
             解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
+        postprocess
+            解析結果を後処理する関数。
+            レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。
+            更新したDataFrameは戻り値として返すこと。
         """
 
-        results = [
-            analyze(AnalyzeArgs(ctx, lane, self._output)) for lane in self._lanes
-        ]
-        return pd.DataFrame(results)
+        results = pd.DataFrame(
+            [analyze(AnalyzeArgs(ctx, lane, self._output)) for lane in self._lanes]
+        )
+        if postprocess:
+            postprocessed = postprocess(PostprocessArgs(ctx, results))
+            if postprocessed is not None:
+                return postprocessed
+        return results
 
 
 class ParallelRunner:
@@ -161,6 +184,9 @@ class ParallelRunner:
         self,
         ctx: Context,
         analyze: Callable[[AnalyzeArgs[Context]], pd.Series],
+        postprocess: Optional[
+            Callable[[PostprocessArgs[Context]], pd.DataFrame]
+        ] = None,
     ) -> pd.DataFrame:
         """
         各レーンごとに画像解析を実行する。
@@ -173,11 +199,21 @@ class ParallelRunner:
         analyze
             解析関数。
             解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
+        postprocess
+            解析結果を後処理する関数。
+            レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。
+            更新したDataFrameは戻り値として返すこと。
         """
 
         with ProcessPoolExecutor() as executor:
-            results = executor.map(
-                analyze,
-                [AnalyzeArgs(ctx, lane, self._output) for lane in self._lanes],
+            results = pd.DataFrame(
+                executor.map(
+                    analyze,
+                    [AnalyzeArgs(ctx, lane, self._output) for lane in self._lanes],
+                )
             )
-        return pd.DataFrame(results)
+        if postprocess:
+            postprocessed = postprocess(PostprocessArgs(ctx, results))
+            if postprocessed is not None:
+                return postprocessed
+        return results
