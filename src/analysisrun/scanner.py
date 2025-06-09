@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -67,7 +67,11 @@ class Lanes:
     """
 
     def __init__(
-        self, whole_data: pd.DataFrame, target_data: List[str], field_numbers: List[int]
+        self,
+        whole_data: pd.DataFrame,
+        target_data: List[str],
+        field_numbers: List[int],
+        entity: Optional[str],
     ) -> None:
         """
         データ全体をレーンごとにスキャンする
@@ -80,6 +84,11 @@ class Lanes:
             対象データ名のリスト
         field_numbers
             スキャン対象となる視野番号のリスト
+        entity
+            数値解析の対象となるエンティティ名(Entity列)
+
+            意図しないタイプのデータ(列)を解析対象としないよう、必ずエンティティ名で絞り込みを行うこととする。
+            未指定の場合"Activity Spots"を使用する。
         """
 
         whole_data["Data"] = whole_data["Filename"].apply(
@@ -88,7 +97,7 @@ class Lanes:
         whole_data["ImageAnalysisMethod"] = whole_data["Filename"].apply(
             lambda x: str(x).split("_000_")[0]
         )
-        whole_data = whole_data[whole_data["Entity"] == "Activity Spots"]
+        whole_data = whole_data[whole_data["Entity"] == (entity or "Activity Spots")]
         self.whole_data = whole_data
         self.target_data = target_data
         self.field_numbers = field_numbers
