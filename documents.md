@@ -35,29 +35,33 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 主にJupyter notebookでの使用を想定したrunner。
 
-### `NotebookRunner.run(ctx: Context, analyze: Callable[[AnalyzeArgs[Context]], pd.Series], postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]) -> pd.DataFrame`
+### `NotebookRunner.run(ctx: Context, target_data: list[str], whole_data: CleansedData, data_for_enhancement: list[CleansedData], field_numbers: Optional[list[int]], output: Optional[Output]) -> pd.DataFrame`
 
-各レーンごとに数値解析を実行する。
-レーンごとの解析結果を結合したDataFrameを返す。
+各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
 
 **引数**
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数。 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
-- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数。 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト
+- `target_data: list[str]`: 対象データのリスト
+- `whole_data: CleansedData`: クレンジングされた解析対象データ
+- `data_for_enhancement: list[CleansedData]`: 各データを別の観点から解析し、補強するためのデータのリスト
+- `field_numbers: Optional[list[int]]`: スキャン対象となる視野番号のリスト
+- `output: Optional[Output]`: 画像を保存するためのOutput実装
 
 ## `class ParallelRunner`
 
 マルチプロセスで並列処理するrunner。
 
-### `ParallelRunner.run(ctx: Context, analyze: Callable[[AnalyzeArgs[Context]], pd.Series], postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]) -> pd.DataFrame`
+### `ParallelRunner.run(ctx: Context, target_data: list[str], whole_data: CleansedData, data_for_enhancement: list[CleansedData], field_numbers: Optional[list[int]], output: Optional[Output]) -> pd.DataFrame`
 
-各レーンごとに数値解析を実行する。
-レーンごとの解析結果を結合したDataFrameを返す。
+各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
 
 **引数**
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数。 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
-- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数。 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト
+- `target_data: list[str]`: 対象データのリスト
+- `whole_data: CleansedData`: クレンジングされた解析対象データ
+- `data_for_enhancement: list[CleansedData]`: 各データを別の観点から解析し、補強するためのデータのリスト
+- `field_numbers: Optional[list[int]]`: スキャン対象となる視野番号のリスト
+- `output: Optional[Output]`: 画像を保存するためのOutput実装
 
 ---
 
