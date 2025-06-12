@@ -88,12 +88,9 @@ class Lanes:
         """
 
         data = whole_data._data
-        data["Data"] = data["Filename"].apply(
-            lambda x: str(x).split("_000_")[1].split(".")[0]
-        )
-        data["ImageAnalysisMethod"] = data["Filename"].apply(
-            lambda x: str(x).split("_000_")[0]
-        )
+        split_data = data["Filename"].str.split("_000_", expand=True)
+        data["ImageAnalysisMethod"] = split_data[0]
+        data["Data"] = split_data[1].str.split(".", expand=True)[0]
 
         self.whole_data = data
         self.target_data = target_data
