@@ -35,6 +35,10 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 主にJupyter notebookでの使用を想定したrunner。
 
+**コンストラクタの引数**
+- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
+- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
+
 ### `NotebookRunner.run(ctx: Context, target_data: list[str], whole_data: CleansedData, data_for_enhancement: list[CleansedData], field_numbers: Optional[list[int]], output: Optional[Output]) -> pd.DataFrame`
 
 各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
@@ -50,6 +54,10 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 ## `class ParallelRunner`
 
 マルチプロセスで並列処理するrunner。
+
+**コンストラクタの引数**
+- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
+- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
 
 ### `ParallelRunner.run(ctx: Context, target_data: list[str], whole_data: CleansedData, data_for_enhancement: list[CleansedData], field_numbers: Optional[list[int]], output: Optional[Output]) -> pd.DataFrame`
 
@@ -86,6 +94,13 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 
 レーンのデータを視野ごとにスキャンする
 
+**コンストラクタの引数**
+- `name: str`: データ名
+- `image_analysis_method: str`: 画像解析メソッド
+- `data: pd.DataFrame`: 対象データ
+- `field_numbers: List[int]`: スキャン対象となる視野番号のリスト
+- `skip_empty_fields: bool`: データのない視野をスキップするかどうか
+
 ### `Fields.skip_empty_fields()`
 
 データのない視野をスキップするスキャナーを作成する
@@ -93,6 +108,11 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 ## `class Lanes`
 
 データ全体をレーンごとにスキャンする
+
+**コンストラクタの引数**
+- `whole_data: CleansedData`: 解析対象データ
+- `target_data: List[str]`: 対象データ名のリスト
+- `field_numbers: List[int]`: スキャン対象となる視野番号のリスト
 
 ---
 
