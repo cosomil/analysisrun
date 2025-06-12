@@ -20,7 +20,8 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 **メンバ変数**
 
 - `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `fields: scanner.Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
+- `fields: Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
+- `fields_for_enhancement: list[Fields]`: 各データを別の観点から解析し、補強するためのスキャナーのリスト。
 - `output: Output`: 画像を保存するためのOutput実装。
 
 ## `class PostprocessArgs`
@@ -36,7 +37,7 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 ### `NotebookRunner.run(ctx: Context, analyze: Callable[[AnalyzeArgs[Context]], pd.Series], postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]) -> pd.DataFrame`
 
-各レーンごとに画像解析を実行する。
+各レーンごとに数値解析を実行する。
 レーンごとの解析結果を結合したDataFrameを返す。
 
 **引数**
@@ -50,7 +51,7 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 ### `ParallelRunner.run(ctx: Context, analyze: Callable[[AnalyzeArgs[Context]], pd.Series], postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]) -> pd.DataFrame`
 
-各レーンごとに画像解析を実行する。
+各レーンごとに数値解析を実行する。
 レーンごとの解析結果を結合したDataFrameを返す。
 
 **引数**
@@ -88,6 +89,24 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 ## `class Lanes`
 
 データ全体をレーンごとにスキャンする
+
+---
+
+# analysisrun.cleansing
+
+数値解析対象として意図されていないデータの混入を防ぐためのクレンジング処理と、クレンジング済みであることを表すデータ型を提供します。
+
+## `class CleansedData`
+
+データクレンジング処理後の解析対象データ
+
+### `filter_by_entity(data: pd.DataFrame | CleansedData, entity: str) -> CleansedData`
+
+指定されたエンティティ名でデータをフィルタリングする。
+
+**引数**
+- `data: pd.DataFrame | CleansedData`: 解析対象データ
+- `entity: str`: 数値解析の対象となるエンティティ名(Entity列)
 
 ---
 

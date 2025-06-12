@@ -1,12 +1,12 @@
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, List, LiteralString, Optional, Protocol
+from typing import Callable, LiteralString, Optional, Protocol, Iterable, Sequence
 
 import matplotlib.figure as fig
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from . import scanner
+from .scanner import CleansedData, Fields, Lanes
 
 
 class Output(Protocol):
@@ -57,9 +57,13 @@ class AnalyzeArgs[Context]:
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト。
     """
-    fields: scanner.Fields
+    fields: Fields
     """
     対象となるレーンのデータを視野ごとに探索するためのスキャナー。
+    """
+    fields_for_enhancement: list[Fields]
+    """
+    各データを別の観点から解析し、補強するためのスキャナーのリスト。
     """
     output: Output
     """
@@ -86,9 +90,10 @@ class NotebookRunner:
 
     def __init__(
         self,
-        whole_data: pd.DataFrame,
-        target_data: List[str],
-        field_numbers: Optional[List[int]] = None,
+        target_data: list[str],
+        whole_data: CleansedData,
+        data_for_enhancement: list[CleansedData] = [],
+        field_numbers: Optional[list[int]] = None,
         output: Optional[Output] = None,
     ):
         """
@@ -96,19 +101,31 @@ class NotebookRunner:
 
         Parameters
         ----------
-        whole_data
-            全データ
         target_data
             対象データのリスト
+        whole_data
+            クレンジングされた解析対象データ
+        data_for_enhancement
+            各データを別の観点から解析し、補強するためのデータのリスト。
         field_numbers
             スキャン対象となる視野番号のリスト
         """
 
-        self._lanes = scanner.Lanes(
+        field_numbers = field_numbers or [i + 1 for i in range(12)]
+
+        self._lanes = Lanes(
             whole_data=whole_data,
             target_data=target_data,
-            field_numbers=field_numbers or [i + 1 for i in range(12)],
+            field_numbers=field_numbers,
         )
+        self._lanes_for_enhancement = [
+            Lanes(
+                target_data=target_data,
+                whole_data=data,
+                field_numbers=field_numbers,
+            )
+            for data in data_for_enhancement
+        ]
         self._output = output or DefaultOutput(show=True)
         return
 
@@ -121,7 +138,7 @@ class NotebookRunner:
         ] = None,
     ) -> pd.DataFrame:
         """
-        各レーンごとに画像解析を実行する。
+        各レーンごとに数値解析を実行する。
         レーンごとの解析結果を結合したDataFrameを返す。
 
         Parameters
@@ -138,7 +155,19 @@ class NotebookRunner:
         """
 
         results = pd.DataFrame(
-            [analyze(AnalyzeArgs(ctx, lane, self._output)) for lane in self._lanes]
+            [
+                analyze(
+                    AnalyzeArgs[Context](
+                        ctx=ctx,
+                        fields=fields,
+                        fields_for_enhancement=lane_for_enhancement,
+                        output=self._output,
+                    )
+                )
+                for fields, *lane_for_enhancement in __zip_unpacked(
+                    self._lanes, self._lanes_for_enhancement
+                )
+            ]
         )
         if postprocess:
             postprocessed = postprocess(PostprocessArgs(ctx, results))
@@ -154,9 +183,10 @@ class ParallelRunner:
 
     def __init__(
         self,
-        whole_data: pd.DataFrame,
-        target_data: List[str],
-        field_numbers: Optional[List[int]] = None,
+        target_data: list[str],
+        whole_data: CleansedData,
+        data_for_enhancement: list[CleansedData] = [],
+        field_numbers: Optional[list[int]] = None,
         output: Optional[Output] = None,
     ):
         """
@@ -164,19 +194,32 @@ class ParallelRunner:
 
         Parameters
         ----------
-        whole_data
-            全データ
         target_data
             対象データのリスト
+        whole_data
+            クレンジングされた解析対象データ
+        data_for_enhancement
+            各データを別の観点から解析し、補強するためのデータのリスト。
         field_numbers
             スキャン対象となる視野番号のリスト
         """
 
-        self._lanes = scanner.Lanes(
-            whole_data=whole_data,
+        field_numbers = field_numbers or [i + 1 for i in range(12)]
+
+        self._lanes = Lanes(
             target_data=target_data,
-            field_numbers=field_numbers or [i + 1 for i in range(12)],
+            whole_data=whole_data,
+            field_numbers=field_numbers,
         )
+        self._lanes_for_enhancement = [
+            Lanes(
+                target_data=target_data,
+                whole_data=data,
+                field_numbers=field_numbers,
+            )
+            for data in data_for_enhancement
+        ]
+
         self._output = output or DefaultOutput(show=False)
         return
 
@@ -189,7 +232,7 @@ class ParallelRunner:
         ] = None,
     ) -> pd.DataFrame:
         """
-        各レーンごとに画像解析を実行する。
+        各レーンごとに数値解析を実行する。
         レーンごとの解析結果を結合したDataFrameを返す。
 
         Parameters
@@ -209,7 +252,17 @@ class ParallelRunner:
             results = pd.DataFrame(
                 executor.map(
                     analyze,
-                    [AnalyzeArgs(ctx, lane, self._output) for lane in self._lanes],
+                    [
+                        AnalyzeArgs[Context](
+                            ctx=ctx,
+                            fields=fields,
+                            fields_for_enhancement=lane_for_enhancement,
+                            output=self._output,
+                        )
+                        for fields, *lane_for_enhancement in __zip_unpacked(
+                            self._lanes, self._lanes_for_enhancement
+                        )
+                    ],
                 )
             )
         if postprocess:
@@ -217,3 +270,9 @@ class ParallelRunner:
             if postprocessed is not None:
                 return postprocessed
         return results
+
+
+def __zip_unpacked[T](
+    main: Iterable[T], supplemental: Sequence[Iterable[T]]
+) -> list[list[T]]:
+    return [[x, *others] for x, *others in zip(main, *supplemental)]
