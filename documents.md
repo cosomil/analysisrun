@@ -19,10 +19,10 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 **メンバ変数**
 
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `fields: Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
-- `fields_for_enhancement: list[Fields]`: 各データを別の観点から解析し、補強するためのスキャナーのリスト。
-- `output: Output`: 画像を保存するためのOutput実装。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト
+- `fields: Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー
+- `data_for_enhancement: list[Fields]`: 各データを別の観点から解析し、補強するためのスキャナーのリスト
+- `output: Output`: 画像を保存するためのOutput実装
 
 ## `class PostprocessArgs`
 

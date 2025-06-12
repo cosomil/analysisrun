@@ -62,19 +62,19 @@ class DefaultOutput:
 class AnalyzeArgs[Context]:
     ctx: Context
     """
-    解析全体に関わる情報を格納するコンテキストオブジェクト。
+    解析全体に関わる情報を格納するコンテキストオブジェクト
     """
     fields: Fields
     """
-    対象となるレーンのデータを視野ごとに探索するためのスキャナー。
+    対象となるレーンのデータを視野ごとに探索するためのスキャナー
     """
-    fields_for_enhancement: list[Fields]
+    data_for_enhancement: list[Fields]
     """
-    各データを別の観点から解析し、補強するためのスキャナーのリスト。
+    各データを別の観点から解析し、補強するためのスキャナーのリスト
     """
     output: Output
     """
-    画像を保存するためのOutput実装。
+    画像を保存するためのOutput実装
     """
 
 
@@ -273,7 +273,7 @@ def __analysis_args_generator[Context](
         yield AnalyzeArgs[Context](
             ctx=ctx,
             fields=fields,
-            fields_for_enhancement=lane_for_enhancement,
+            data_for_enhancement=lane_for_enhancement,
             output=output or DefaultOutput(show=False),
         )
 
