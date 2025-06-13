@@ -19,9 +19,10 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 **メンバ変数**
 
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `fields: scanner.Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー。
-- `output: Output`: 画像を保存するためのOutput実装。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト
+- `fields: Fields`: 対象となるレーンのデータを視野ごとに探索するためのスキャナー
+- `data_for_enhancement: list[Fields]`: 各データを別の観点から解析し、補強するためのスキャナーのリスト
+- `output: Output`: 画像を保存するためのOutput実装
 
 ## `class PostprocessArgs`
 
@@ -34,29 +35,41 @@ show=Trueの場合、保存後にNotebookへの表示を実行する。
 
 主にJupyter notebookでの使用を想定したrunner。
 
-### `NotebookRunner.run(ctx: Context, analyze: Callable[[AnalyzeArgs[Context]], pd.Series], postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]) -> pd.DataFrame`
+**コンストラクタの引数**
+- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
+- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
 
-各レーンごとに画像解析を実行する。
-レーンごとの解析結果を結合したDataFrameを返す。
+### `NotebookRunner.run(ctx: Context, target_data: list[str], whole_data: CleansedData, data_for_enhancement: list[CleansedData], field_numbers: Optional[list[int]], output: Optional[Output]) -> pd.DataFrame`
+
+各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
 
 **引数**
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数。 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
-- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数。 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト
+- `target_data: list[str]`: 対象データのリスト
+- `whole_data: CleansedData`: クレンジングされた解析対象データ
+- `data_for_enhancement: list[CleansedData]`: 各データを別の観点から解析し、補強するためのデータのリスト
+- `field_numbers: Optional[list[int]]`: スキャン対象となる視野番号のリスト
+- `output: Optional[Output]`: 画像を保存するためのOutput実装
 
 ## `class ParallelRunner`
 
 マルチプロセスで並列処理するrunner。
 
-### `ParallelRunner.run(ctx: Context, analyze: Callable[[AnalyzeArgs[Context]], pd.Series], postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]) -> pd.DataFrame`
+**コンストラクタの引数**
+- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
+- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
 
-各レーンごとに画像解析を実行する。
-レーンごとの解析結果を結合したDataFrameを返す。
+### `ParallelRunner.run(ctx: Context, target_data: list[str], whole_data: CleansedData, data_for_enhancement: list[CleansedData], field_numbers: Optional[list[int]], output: Optional[Output]) -> pd.DataFrame`
+
+各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
 
 **引数**
-- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト。
-- `analyze: Callable[[AnalyzeArgs[Context]], pd.Series]`: 解析関数。 解析関数はグローバル変数を参照してはならず、関数のなかで宣言された変数とコンテキストオブジェクトに格納した変数のみを参照すること。
-- `postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]]`: 解析結果を後処理する関数。 レーンごとの解析結果を結合したDataFrameを受け取り、総合して結果を更新することができる。 更新したDataFrameは戻り値として返すこと。
+- `ctx: Context`: 解析全体に関わる情報を格納するコンテキストオブジェクト
+- `target_data: list[str]`: 対象データのリスト
+- `whole_data: CleansedData`: クレンジングされた解析対象データ
+- `data_for_enhancement: list[CleansedData]`: 各データを別の観点から解析し、補強するためのデータのリスト
+- `field_numbers: Optional[list[int]]`: スキャン対象となる視野番号のリスト
+- `output: Optional[Output]`: 画像を保存するためのOutput実装
 
 ---
 
@@ -81,6 +94,13 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 
 レーンのデータを視野ごとにスキャンする
 
+**コンストラクタの引数**
+- `name: str`: データ名
+- `image_analysis_method: str`: 画像解析メソッド
+- `data: pd.DataFrame`: 対象データ
+- `field_numbers: List[int]`: スキャン対象となる視野番号のリスト
+- `skip_empty_fields: bool`: データのない視野をスキップするかどうか
+
 ### `Fields.skip_empty_fields()`
 
 データのない視野をスキップするスキャナーを作成する
@@ -88,6 +108,29 @@ CSVファイルを読み込み、指定したカラムをキーと値にして�
 ## `class Lanes`
 
 データ全体をレーンごとにスキャンする
+
+**コンストラクタの引数**
+- `whole_data: CleansedData`: 解析対象データ
+- `target_data: List[str]`: 対象データ名のリスト
+- `field_numbers: List[int]`: スキャン対象となる視野番号のリスト
+
+---
+
+# analysisrun.cleansing
+
+数値解析対象として意図されていないデータの混入を防ぐためのクレンジング処理と、クレンジング済みであることを表すデータ型を提供します。
+
+## `class CleansedData`
+
+データクレンジング処理後の解析対象データ
+
+### `filter_by_entity(data: pd.DataFrame | CleansedData, entity: str) -> CleansedData`
+
+指定されたエンティティ名でデータをフィルタリングする。
+
+**引数**
+- `data: pd.DataFrame | CleansedData`: 解析対象データ
+- `entity: str`: 数値解析の対象となるエンティティ名(Entity列)
 
 ---
 
