@@ -3,10 +3,12 @@ from dataclasses import dataclass
 from typing import (
     Callable,
     Generator,
+    Generic,
     Iterable,
     LiteralString,
     Optional,
     Protocol,
+    TypeVar,
 )
 
 import matplotlib.figure as fig
@@ -14,6 +16,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from .scanner import CleansedData, Fields, Lanes
+
+Context = TypeVar("Context")
 
 
 class Output(Protocol):
@@ -59,7 +63,7 @@ class DefaultOutput:
 
 
 @dataclass
-class AnalyzeArgs[Context]:
+class AnalyzeArgs(Generic[Context]):
     ctx: Context
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト
@@ -79,7 +83,7 @@ class AnalyzeArgs[Context]:
 
 
 @dataclass
-class PostprocessArgs[Context]:
+class PostprocessArgs(Generic[Context]):
     ctx: Context
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト。
@@ -90,7 +94,7 @@ class PostprocessArgs[Context]:
     """
 
 
-class NotebookRunner[Context]:
+class NotebookRunner(Generic[Context]):
     """
     主にJupyter notebookでの使用を想定したrunner。
     """
@@ -151,7 +155,7 @@ class NotebookRunner[Context]:
         results = pd.DataFrame(
             [
                 self._analyze(args)
-                for args in __analysis_args_generator(
+                for args in _analysis_args_generator(
                     ctx,
                     target_data,
                     whole_data,
@@ -162,10 +166,10 @@ class NotebookRunner[Context]:
             ]
         )
 
-        return __apply_postprocess(ctx, results, self._postprocess)
+        return _apply_postprocess(ctx, results, self._postprocess)
 
 
-class ParallelRunner[Context]:
+class ParallelRunner(Generic[Context]):
     """
     マルチプロセスで並列処理するrunner。
     """
@@ -227,7 +231,7 @@ class ParallelRunner[Context]:
             results = pd.DataFrame(
                 executor.map(
                     self._analyze,
-                    __analysis_args_generator(
+                    _analysis_args_generator(
                         ctx,
                         target_data,
                         whole_data,
@@ -238,10 +242,10 @@ class ParallelRunner[Context]:
                 )
             )
 
-        return __apply_postprocess(ctx, results, self._postprocess)
+        return _apply_postprocess(ctx, results, self._postprocess)
 
 
-def __analysis_args_generator[Context](
+def _analysis_args_generator(
     ctx: Context,
     target_data: list[str],
     whole_data: CleansedData,
@@ -269,7 +273,7 @@ def __analysis_args_generator[Context](
         for data in data_for_enhancement
     )
 
-    for fields, *lane_for_enhancement in __zip_unpacked(lanes, lanes_for_enhancement):
+    for fields, *lane_for_enhancement in _zip_unpacked(lanes, lanes_for_enhancement):
         yield AnalyzeArgs[Context](
             ctx=ctx,
             fields=fields,
@@ -278,7 +282,7 @@ def __analysis_args_generator[Context](
         )
 
 
-def __apply_postprocess[Context](
+def _apply_postprocess(
     ctx: Context,
     results: pd.DataFrame,
     postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]],
@@ -296,7 +300,7 @@ def __apply_postprocess[Context](
     return results
 
 
-def __zip_unpacked[T](
+def _zip_unpacked[T](
     main: Iterable[T], supplemental: Iterable[Iterable[T]]
-) -> list[list[T]]:
-    return [[x, *others] for x, *others in zip(main, *supplemental)]
+) -> Generator[list[T]]:
+    return ([x, *others] for x, *others in zip(main, *supplemental))
