@@ -3,10 +3,12 @@ from dataclasses import dataclass
 from typing import (
     Callable,
     Generator,
+    Generic,
     Iterable,
     LiteralString,
     Optional,
     Protocol,
+    TypeVar,
 )
 
 import matplotlib.figure as fig
@@ -14,6 +16,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from .scanner import CleansedData, Fields, Lanes
+
+Context = TypeVar("Context")
 
 
 class Output(Protocol):
@@ -59,7 +63,7 @@ class DefaultOutput:
 
 
 @dataclass
-class AnalyzeArgs[Context]:
+class AnalyzeArgs(Generic[Context]):
     ctx: Context
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト
@@ -79,7 +83,7 @@ class AnalyzeArgs[Context]:
 
 
 @dataclass
-class PostprocessArgs[Context]:
+class PostprocessArgs(Generic[Context]):
     ctx: Context
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト。
@@ -90,7 +94,7 @@ class PostprocessArgs[Context]:
     """
 
 
-class NotebookRunner[Context]:
+class NotebookRunner(Generic[Context]):
     """
     主にJupyter notebookでの使用を想定したrunner。
     """
@@ -165,7 +169,7 @@ class NotebookRunner[Context]:
         return _apply_postprocess(ctx, results, self._postprocess)
 
 
-class ParallelRunner[Context]:
+class ParallelRunner(Generic[Context]):
     """
     マルチプロセスで並列処理するrunner。
     """
@@ -241,7 +245,7 @@ class ParallelRunner[Context]:
         return _apply_postprocess(ctx, results, self._postprocess)
 
 
-def _analysis_args_generator[Context](
+def _analysis_args_generator(
     ctx: Context,
     target_data: list[str],
     whole_data: CleansedData,
@@ -278,7 +282,7 @@ def _analysis_args_generator[Context](
         )
 
 
-def _apply_postprocess[Context](
+def _apply_postprocess(
     ctx: Context,
     results: pd.DataFrame,
     postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]],
@@ -298,5 +302,5 @@ def _apply_postprocess[Context](
 
 def _zip_unpacked[T](
     main: Iterable[T], supplemental: Iterable[Iterable[T]]
-) -> list[list[T]]:
-    return [[x, *others] for x, *others in zip(main, *supplemental)]
+) -> Generator[list[T]]:
+    return ([x, *others] for x, *others in zip(main, *supplemental))
