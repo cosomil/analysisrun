@@ -4,7 +4,7 @@
 ## ライブラリ
 ### インストール方法
 ```shell
-$ uv add git+https://github.com/cosomil/analysisrun --tag v0.0.5
+$ uv add git+https://github.com/cosomil/analysisrun --tag v0.0.6
 ```
 ※適切なバージョン（タグ）を選択してください。
 ※GitHubで公開されたパッケージをインストールするためには、システムにGitがインストールされている必要があります。
