@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.0.6](https://github.com/cosomil/analysisrun/compare/v0.0.5...v0.0.6) - 2025-06-16
+- docs by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/37
+- fix: マングリングエラーとpickleエラーを解消 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/39
+
 ## [v0.0.5](https://github.com/cosomil/analysisrun/compare/v0.0.4...v0.0.5) - 2025-06-13
 - 数値解析の対象となるデータのエンティティ名(Entity列)を指定できるようにする by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/32
 - 複数の画像解析結果CSVを解析対象として扱う by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/36
