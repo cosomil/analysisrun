@@ -223,17 +223,36 @@ class ParallelRunner[Context]:
             画像を保存するためのOutput実装
         """
 
+        field_numbers = field_numbers or [i + 1 for i in range(12)]
+
+        lanes = Lanes(
+            whole_data=whole_data,
+            target_data=target_data,
+            field_numbers=field_numbers,
+        )
+        lanes_for_enhancement = (
+            Lanes(
+                target_data=target_data,
+                whole_data=data,
+                field_numbers=field_numbers,
+            )
+            for data in data_for_enhancement
+        )
+
         with ProcessPoolExecutor() as executor:
             results = pd.DataFrame(
                 executor.map(
                     self._analyze,
-                    _analysis_args_generator(
-                        ctx,
-                        target_data,
-                        whole_data,
-                        data_for_enhancement,
-                        field_numbers,
-                        output,
+                    (
+                        AnalyzeArgs[Context](
+                            ctx=ctx,
+                            fields=fields,
+                            data_for_enhancement=lane_for_enhancement,
+                            output=output or DefaultOutput(show=False),
+                        )
+                        for fields, *lane_for_enhancement in _zip_unpacked(
+                            lanes, lanes_for_enhancement
+                        )
                     ),
                 )
             )
@@ -298,5 +317,5 @@ def _apply_postprocess[Context](
 
 def _zip_unpacked[T](
     main: Iterable[T], supplemental: Iterable[Iterable[T]]
-) -> list[list[T]]:
-    return [[x, *others] for x, *others in zip(main, *supplemental)]
+) -> Generator[list[T]]:
+    return ([x, *others] for x, *others in zip(main, *supplemental))
