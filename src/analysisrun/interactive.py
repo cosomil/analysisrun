@@ -2,11 +2,14 @@ import inspect
 from io import BytesIO
 from os import getcwd
 from pathlib import Path
+from sys import stdin
 from typing import Any, Optional, Type, TypeVar, get_origin
 
 from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
 from typing_extensions import deprecated
+
+from .__pipe import read_tar_as_dict
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -114,6 +117,7 @@ def _prompt_for_value(
 def scan_model_input(model_class: Type[T]) -> T:
     """
     モデルのフィールドをインタラクティブに入力し、モデルのインスタンスを返します。
+    標準入力がリダイレクトされている場合はtar形式としてデータを読み込み、ファイル名／データを名前／データに変換します。
 
     note: フィールドがさらにBaseModelを継承している場合の処理は未実装です。
 
@@ -122,6 +126,11 @@ def scan_model_input(model_class: Type[T]) -> T:
     model_class
         Pydanticモデルクラス
     """
+
+    if not stdin.isatty():
+        _in = read_tar_as_dict(stdin.buffer)
+        return model_class(**_in)
+
     # 有効な入力値を保存する辞書
     valid_inputs = {}
     field_values = {}
@@ -272,10 +281,10 @@ class VirtualFile(Path):
             super().__init__(Path(getcwd()) / "virtual-file")
 
             # io.BytesIOが与えられた場合のみ、FileLikeオブジェクトとして振る舞うためのメソッドを追加
-            def read(self: VirtualFile) -> bytes:
+            def read(self: VirtualFile | None = None) -> bytes:
                 return v.read()
 
-            def iter(self: VirtualFile):
+            def iter(self: VirtualFile | None = None):
                 raise NotImplementedError()
 
             self.read = read
