@@ -4,7 +4,7 @@ from os import getcwd
 from pathlib import Path
 from typing import Any, Optional, Type, TypeVar, get_origin
 
-from pydantic import BaseModel, GetCoreSchemaHandler, ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
 from typing_extensions import deprecated
 
@@ -209,7 +209,7 @@ class FilePath(str):
     """
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+    def __get_pydantic_core_schema__(cls, source_type, handler):
         def validate(v):
             if not isinstance(v, str):
                 return v
@@ -233,7 +233,7 @@ class DirectoryPath(str):
     """
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+    def __get_pydantic_core_schema__(cls, source_type, handler):
         def validate(v):
             if not isinstance(v, str):
                 return v
