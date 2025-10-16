@@ -1,10 +1,12 @@
-from typing import TypeVar, Type, Any, get_origin, Optional
 import inspect
+from io import BytesIO
+from os import getcwd
 from pathlib import Path
+from typing import Any, Optional, Type, TypeVar, get_origin
 
-from pydantic import BaseModel, ValidationError, GetCoreSchemaHandler
+from pydantic import BaseModel, GetCoreSchemaHandler, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
-
+from typing_extensions import deprecated
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -199,6 +201,7 @@ def scan_model_input(model_class: Type[T]) -> T:
             print()
 
 
+@deprecated("削除予定。VirtualFileを使用してください。")
 class FilePath(str):
     """
     ファイルパスを表す文字列型。バリデーションの際にファイルの存在を確認します。
@@ -222,6 +225,7 @@ class FilePath(str):
         return core_schema.no_info_plain_validator_function(validate)
 
 
+@deprecated("削除予定")
 class DirectoryPath(str):
     """
     ディレクトリパスを表す文字列型。バリデーションの際にディレクトリの存在を確認します。
@@ -243,5 +247,55 @@ class DirectoryPath(str):
                     f"ディレクトリ（フォルダー）のパスを指定してください: '{v}'"
                 )
             return v
+
+        return core_schema.no_info_plain_validator_function(validate)
+
+
+class VirtualFile(Path):
+    """
+    仮想ファイルを扱う型。Pathオブジェクトまたはio.BytesIOオブジェクトを受け入れます。
+    Pathオブジェクトのようにふるまうほか、io.BytesIOオブジェクトが与えられた場合にはファイルのように振る舞います。
+    pandasのread_csvで読み込みができることを確認しています。
+
+    Pathあるいは文字列が与えられた場合:
+    - ファイルの存在を確認し、存在しなければエラーとなります。
+
+    io.BytesIOが与えられた場合:
+    - 作業ディレクトリに存在する可能ファイルのように振る舞います。
+    - ファイル名は仮想的に"virtual-file"とします。
+    """
+
+    def __init__(self, v: Path | BytesIO):
+        if isinstance(v, Path):
+            super().__init__(v)
+        elif isinstance(v, BytesIO):
+            super().__init__(Path(getcwd()) / "virtual-file")
+
+            # io.BytesIOが与えられた場合のみ、FileLikeオブジェクトとして振る舞うためのメソッドを追加
+            def read(self: VirtualFile) -> bytes:
+                return v.read()
+
+            def iter(self: VirtualFile):
+                raise NotImplementedError()
+
+            self.read = read
+            self.__iter__ = iter
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type, handler):
+        def validate(v):
+            if isinstance(v, (str, Path)):
+                if isinstance(v, str):
+                    if v.startswith("'") and v.endswith("'"):
+                        v = v[1:-1]
+                    v = Path(v)
+                if not v.exists():
+                    raise ValueError(f"ファイルが存在しません: '{v}'")
+                if not v.is_file():
+                    raise ValueError(f"ファイルのパスを指定してください: '{v}'")
+                return cls(v)
+            elif isinstance(v, BytesIO):
+                return cls(v)  # type: ignore
+            raise TypeError(f"Unsupported type: {type(v)}")
 
         return core_schema.no_info_plain_validator_function(validate)
