@@ -1,9 +1,10 @@
 import inspect
+from dataclasses import is_dataclass
 from io import BytesIO
 from os import getcwd
 from pathlib import Path
 from sys import stdin
-from typing import Any, Optional, Type, TypeVar, get_origin
+from typing import Any, Optional, Type, TypeGuard, TypeVar, get_origin
 
 from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
@@ -103,7 +104,11 @@ def _prompt_for_value(
 
         return tuple(tuple_values)
 
-    # その他の型の場合
+    # Pydanticモデルの場合（ネストした入力）
+    elif _is_pydantic_model(field_type):
+        return _scan_object(field_type, field_name)
+
+    # その他の型の場合（custom_inputを含む）
     else:
         value = input(prompt)
 
@@ -114,23 +119,7 @@ def _prompt_for_value(
         return value
 
 
-def scan_model_input(model_class: Type[T]) -> T:
-    """
-    モデルのフィールドをインタラクティブに入力し、モデルのインスタンスを返します。
-    標準入力がリダイレクトされている場合はtar形式としてデータを読み込み、ファイル名／データを名前／データに変換します。
-
-    note: フィールドがさらにBaseModelを継承している場合の処理は未実装です。
-
-    Parameters
-    ----------
-    model_class
-        Pydanticモデルクラス
-    """
-
-    if not stdin.isatty():
-        _in = read_tar_as_dict(stdin.buffer)
-        return model_class(**_in)
-
+def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
     # 有効な入力値を保存する辞書
     valid_inputs = {}
     field_values = {}
@@ -170,8 +159,9 @@ def scan_model_input(model_class: Type[T]) -> T:
 
                 # 値の入力
                 assert field_type.annotation is not None
+                display_field_name = f"{parent}.{field_name}" if parent else field_name
                 field_values[field_name] = _prompt_for_value(
-                    field_type.annotation, field_name, description, field_info
+                    field_type.annotation, display_field_name, description, field_info
                 )
 
             # モデルのインスタンスを作成してみる
@@ -215,6 +205,46 @@ def scan_model_input(model_class: Type[T]) -> T:
             print()
 
 
+def scan_model_input(model_class: Type[T]) -> T:
+    """
+    モデルのフィールドをインタラクティブに入力し、モデルのインスタンスを返します。
+    標準入力がリダイレクトされている場合はtar形式としてデータを読み込み、ファイル名／データを名前／データに変換します。
+
+    フィールドがBaseModelを実装している場合には再帰的に処理します。
+    BaseModelの配列のようなケースには未対応。
+
+    Parameters
+    ----------
+    model_class
+        Pydanticモデルクラス
+    """
+
+    if not stdin.isatty():
+        _in = read_tar_as_dict(stdin.buffer)
+        return model_class(**_in)
+
+    return _scan_object(model_class, None)
+
+
+def custom_input():
+    def wrapper(source_type):
+        setattr(source_type, "__analysisrun_custom_input__", True)
+        return source_type
+
+    return wrapper
+
+
+def _is_custom_input(v) -> bool:
+    return hasattr(v, "__analysisrun_custom_input__")
+
+
+def _is_pydantic_model(v) -> TypeGuard[Type[BaseModel]]:
+    return not _is_custom_input(v) and (
+        is_dataclass(v) or hasattr(v, "__get_pydantic_core_schema__")
+    )
+
+
+@custom_input()
 @deprecated("削除予定。VirtualFileを使用してください。")
 class FilePath(str):
     """
@@ -239,6 +269,7 @@ class FilePath(str):
         return core_schema.no_info_plain_validator_function(validate)
 
 
+@custom_input()
 @deprecated("削除予定")
 class DirectoryPath(str):
     """
@@ -265,6 +296,7 @@ class DirectoryPath(str):
         return core_schema.no_info_plain_validator_function(validate)
 
 
+@custom_input()
 class VirtualFile(Path):
     """
     仮想ファイルを扱う型。Pathオブジェクトまたはio.BytesIOオブジェクトを受け入れます。
