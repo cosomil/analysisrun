@@ -135,13 +135,17 @@ def scan_model_input(model_class: Type[T]) -> T:
     valid_inputs = {}
     field_values = {}
 
+    # モデルのフィールドを取得する
+    # NoneTypeのフィールドについては、Noneで初期化しておく
+    fields = model_class.model_fields
+    for field_name, field_type in fields.items():
+        if field_type.annotation is type(None):
+            valid_inputs[field_name] = None
+
     while True:
         try:
-            # モデルのフィールドを取得
-            fields = model_class.__annotations__
-            field_values = {}
-
             # 前回有効だった入力を引き継ぎ
+            field_values = {}
             field_values.update(valid_inputs)
 
             # エラーフィールドのセット（初回は全フィールドを入力対象とする）
@@ -165,8 +169,9 @@ def scan_model_input(model_class: Type[T]) -> T:
                 )
 
                 # 値の入力
+                assert field_type.annotation is not None
                 field_values[field_name] = _prompt_for_value(
-                    field_type, field_name, description, field_info
+                    field_type.annotation, field_name, description, field_info
                 )
 
             # モデルのインスタンスを作成してみる
@@ -270,7 +275,7 @@ class VirtualFile(Path):
     - ファイルの存在を確認し、存在しなければエラーとなります。
 
     io.BytesIOが与えられた場合:
-    - 作業ディレクトリに存在する可能ファイルのように振る舞います。
+    - 作業ディレクトリに存在する仮想ファイルのように振る舞います。
     - ファイル名は仮想的に"virtual-file"とします。
     """
 
