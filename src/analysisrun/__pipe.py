@@ -7,7 +7,15 @@ def read_tar_as_dict(b: BinaryIO) -> dict[str, Any]:
     """
     ストリームからtar形式のデータを読み込み、ファイル名をキー、内容を値とする辞書に変換して返します。
 
-    メンバー名に「.」が含まれる場合（拡張子がある場合）はBytesIOとして、含まれない場合は文字列として扱います。
+    エントリのPAXヘッダー"is_file"がセットされている場合はBytesIOとして、そうでない場合は文字列として扱います。
+
+    エントリ名に「.」が含まれる場合は、ネストした辞書を構築します。
+    例: エントリ "foo.bar" は {"foo": {"bar": value}} のような構造になります。
+
+    Raises
+    ------
+    ValueError
+        構造に矛盾がある場合（例: "foo"と"foo.bar"が両方存在する場合）
     """
 
     # tar形式として解析（直接ストリーム処理）
@@ -20,15 +28,40 @@ def read_tar_as_dict(b: BinaryIO) -> dict[str, Any]:
                 if file_obj:
                     content = file_obj.read()
 
-                    # メンバー名に「.」が含まれるかチェック（拡張子の有無）
-                    if "." in member.name:
-                        # 拡張子がある場合はBytesIOとして保存
-                        # 名前からは拡張子を除去する
-                        name = member.name.rsplit(".", 1)[0]
-                        result[name] = BytesIO(content)
+                    # PAXヘッダーの"is_file"をチェック
+                    is_file = member.pax_headers.get("is_file")
+                    if is_file:
+                        # PAXヘッダーに"is_file"がある場合はBytesIOとして保存
+                        value = BytesIO(content)
                     else:
-                        # 拡張子がない場合は文字列として保存（UTF-8でデコード）
-                        result[member.name] = content.decode("utf-8").strip()
+                        # それ以外の場合は文字列として保存（UTF-8でデコード）
+                        value = content.decode("utf-8").strip()
+
+                    # エントリ名を「.」で分割してネストした辞書を構築
+                    keys = member.name.split(".")
+                    current = result
+
+                    for i, key in enumerate(keys[:-1]):
+                        if key not in current:
+                            current[key] = {}
+                        elif not isinstance(current[key], dict):
+                            existing_path = ".".join(keys[: i + 1])
+                            raise ValueError(
+                                f"tar mapping error: {member.name} requires {existing_path} to be a dictionary, but {existing_path} already has a value"
+                            )
+                        current = current[key]
+
+                    # ターゲットとなる辞書に値を設定
+                    last_key = keys[-1]
+                    if last_key in current:
+                        if isinstance(current[last_key], dict):
+                            existing_path = ".".join(keys)
+                            raise ValueError(
+                                f"tar mapping error: {member.name} requires {existing_path} to be a value, but {existing_path} is a dictionary"
+                            )
+
+                    # 既に同じキーが存在する場合は上書き（警告なし）
+                    current[last_key] = value
 
     return result
 
@@ -36,7 +69,7 @@ def read_tar_as_dict(b: BinaryIO) -> dict[str, Any]:
 def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
     """
     辞書からtar形式のデータを作成し、BytesIOとして返します。
-    read_and_transform_stdinの逆操作です。
+    read_tar_as_dictの逆操作です。
 
     Parameters
     ----------
@@ -55,13 +88,16 @@ def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
     with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
         for name, value in data.items():
             # 値をバイト列に変換
+            is_file = False
             if isinstance(value, BytesIO):
                 # BytesIOの場合はそのまま読み込む
                 value.seek(0)  # 読み取り位置を先頭に戻す
                 content = value.read()
+                is_file = True
             elif isinstance(value, bytes):
                 # bytesの場合はそのまま使用
                 content = value
+                is_file = True
             else:
                 # その他の場合は文字列に変換してエンコード
                 content = str(value).encode("utf-8")
@@ -69,6 +105,10 @@ def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
             # TarInfoオブジェクトを作成
             tar_info = tarfile.TarInfo(name=name)
             tar_info.size = len(content)
+
+            # BytesIOの場合はPAXヘッダーに"is_file"をセット
+            if is_file:
+                tar_info.pax_headers = {"is_file": "true"}
 
             # tarアーカイブに追加
             tar.addfile(tar_info, BytesIO(content))
