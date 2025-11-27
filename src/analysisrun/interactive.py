@@ -3,16 +3,22 @@ from dataclasses import is_dataclass
 from io import BytesIO
 from os import getcwd
 from pathlib import Path
-from sys import stdin
-from typing import Any, Optional, Type, TypeGuard, TypeVar, get_origin
+from typing import Any, Optional, Type, TypeGuard, TypeVar, get_origin, Annotated
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, Field
 from pydantic_core import PydanticUndefined, core_schema
 from typing_extensions import deprecated
 
-from .__pipe import read_tar_as_dict
+T = TypeVar("T")
 
-T = TypeVar("T", bound=BaseModel)
+
+def _get_field_descriptions(typ) -> str | None:
+    if type(typ) is type(Annotated[None, None]):  # 'typing._AnnotatedAlias'クラス
+        for _, x in enumerate(typ.__metadata__):  # type: ignore
+            return _get_field_descriptions(x)
+    if type(typ) is type(Field()):
+        return typ.description  # type: ignore
+    return None
 
 
 def _prompt_for_value(
@@ -58,9 +64,16 @@ def _prompt_for_value(
     ):
         print(prompt)
         named_tuple_values = {}
+        field_defaults = field_type._field_defaults  # type: ignore
 
         for sub_field in field_type._fields:  # type: ignore
-            sub_value = input(f"  - {sub_field}: ")
+            description = _get_field_descriptions(field_defaults[sub_field])
+            prompt = (
+                f"  - {description} ({sub_field}): "
+                if description
+                else f"  - {sub_field}: "
+            )
+            sub_value = input(prompt)
             # 入力がない場合のフラグ
             if not sub_value and has_default:
                 return default_value
@@ -120,6 +133,10 @@ def _prompt_for_value(
 
 
 def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
+    assert issubclass(model_class, BaseModel), (
+        "model_class must be a Pydantic BaseModel"
+    )
+
     # 有効な入力値を保存する辞書
     valid_inputs = {}
     field_values = {}
@@ -175,14 +192,21 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
 
             if isinstance(e, ValidationError):
                 # エラーメッセージをフィールドごとにグループ化
-                field_errors = {}
+                field_errors: dict[str, list[str]] = {}
                 for error in e.errors():
                     if error["loc"]:
-                        field_name = error["loc"][0]
+                        field_name: str = error["loc"][0]  # type: ignore
                         error_fields.add(field_name)
-                        if field_name not in field_errors:
-                            field_errors[field_name] = []
-                        field_errors[field_name].append(error["msg"])
+
+                        index = error["loc"][1] if len(error["loc"]) > 1 else None
+                        display_field_name = (
+                            f"{field_name}[{index}]"
+                            if index is not None
+                            else field_name
+                        )
+                        if display_field_name not in field_errors:
+                            field_errors[display_field_name] = []
+                        field_errors[display_field_name].append(error["msg"])
 
                 # エラー内容を表示
                 for field_name, errors in field_errors.items():
@@ -191,7 +215,10 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
                         print(f"    - {error_msg}")
 
                 # エラーがないフィールドの値を保存
-                for field_name, value in field_values.items():
+                for (
+                    field_name,
+                    value,
+                ) in field_values.items():
                     if field_name not in error_fields:
                         valid_inputs[field_name] = value
 
@@ -218,11 +245,6 @@ def scan_model_input(model_class: Type[T]) -> T:
     model_class
         Pydanticモデルクラス
     """
-
-    if not stdin.isatty():
-        _in = read_tar_as_dict(stdin.buffer)
-        return model_class(**_in)
-
     return _scan_object(model_class, None)
 
 
