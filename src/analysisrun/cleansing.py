@@ -2,8 +2,9 @@
 数値解析対象として意図されていないデータの混入を防ぐためのクレンジング処理と、クレンジング済みであることを表すデータ型を提供します。
 """
 
-import pandas as pd
 from dataclasses import dataclass
+
+import pandas as pd
 
 
 @dataclass
