@@ -5,61 +5,16 @@ from typing import (
     Generator,
     Generic,
     Iterable,
-    LiteralString,
     Optional,
-    Protocol,
     TypeVar,
 )
 
-import matplotlib.figure as fig
-import matplotlib.pyplot as plt
 import pandas as pd
 
-from .scanner import CleansedData, Fields, Lanes
+from analysisrun.output import DefaultOutput, Output
+from analysisrun.scanner import CleansedData, Fields, Lanes
 
 Context = TypeVar("Context")
-
-
-class Output(Protocol):
-    """
-    matplotlib.figure.Figureを保存する。
-
-    Parameters
-    ----------
-    fig
-        保存するFigure。
-    name
-        保存するファイル名。
-    image_type
-        画像タイプ。
-        実際の画像保存処理のヒントとなります。
-    kwargs
-        savefigに渡すキーワード引数。
-    """
-
-    def __call__(
-        self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
-    ) -> None: ...
-
-
-class DefaultOutput:
-    """
-    matplotlib.figure.Figureを保存する。
-    show=Trueの場合、保存後にNotebookへの表示を実行する。
-    """
-
-    def __init__(self, show: bool = False):
-        self._show = show
-
-    def __call__(
-        self, fig: fig.Figure, name: str, image_type: LiteralString, **kwargs
-    ) -> None:
-        # 画像を指定の名前で保存し、さらにNotebook上に表示する。
-        fig.savefig(name, **kwargs)
-        if self._show:
-            plt.show(False)
-        fig.clear()
-        plt.close(fig)
 
 
 @dataclass
@@ -252,7 +207,7 @@ def _analysis_args_generator(
     data_for_enhancement: list[CleansedData] = [],
     field_numbers: Optional[list[int]] = None,
     output: Optional[Output] = None,
-) -> Generator[AnalyzeArgs[Context]]:
+) -> Generator[AnalyzeArgs[Context], None, None]:
     """
     各レーンごとの解析に使用する引数を生成するジェネレータ
     """
@@ -302,5 +257,5 @@ def _apply_postprocess(
 
 def _zip_unpacked[T](
     main: Iterable[T], supplemental: Iterable[Iterable[T]]
-) -> Generator[list[T]]:
+) -> Generator[list[T], None, None]:
     return ([x, *others] for x, *others in zip(main, *supplemental))

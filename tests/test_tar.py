@@ -2,7 +2,7 @@ from io import BytesIO
 
 from pydantic import BaseModel
 
-from analysisrun.__pipe import create_tar_from_dict, read_tar_as_dict
+from analysisrun.__tar import create_tar_from_dict, read_tar_as_dict
 from analysisrun.interactive import VirtualFile
 
 

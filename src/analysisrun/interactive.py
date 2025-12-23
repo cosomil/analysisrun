@@ -3,9 +3,9 @@ from dataclasses import is_dataclass
 from io import BytesIO
 from os import getcwd
 from pathlib import Path
-from typing import Any, Optional, Type, TypeGuard, TypeVar, get_origin, Annotated
+from typing import Annotated, Any, Optional, Type, TypeGuard, TypeVar, get_origin
 
-from pydantic import BaseModel, ValidationError, Field
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
 from typing_extensions import deprecated
 
@@ -64,10 +64,18 @@ def _prompt_for_value(
     ):
         print(prompt)
         named_tuple_values = {}
-        field_defaults = field_type._field_defaults  # type: ignore
+        field_defaults = field_type._field_defaults or dict()  # type: ignore
+        assert isinstance(field_defaults, dict)
 
+        # print(f"NamedTuple {type(field_defaults)}")
         for sub_field in field_type._fields:  # type: ignore
-            description = _get_field_descriptions(field_defaults[sub_field])
+            # print(f"sub_field: {sub_field}")
+            default = field_defaults.get(sub_field)
+            # print(f"default: {default}")
+            description = (
+                _get_field_descriptions(default) if default is not None else None
+            )
+            print("prompt")
             prompt = (
                 f"  - {description} ({sub_field}): "
                 if description

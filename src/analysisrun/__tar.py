@@ -1,9 +1,9 @@
 import tarfile
 from io import BytesIO
-from typing import Any, BinaryIO
+from typing import Any, IO, Optional
 
 
-def read_tar_as_dict(b: BinaryIO) -> dict[str, Any]:
+def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
     """
     ストリームからtar形式のデータを読み込み、ファイル名をキー、内容を値とする辞書に変換して返します。
 
@@ -66,6 +66,44 @@ def read_tar_as_dict(b: BinaryIO) -> dict[str, Any]:
     return result
 
 
+def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, Any]):
+    for name, value in data.items():
+        if value is None:
+            continue
+
+        full_name = f"{prefix}.{name}" if prefix else name
+
+        # 値をバイト列に変換
+        is_file = False
+        if isinstance(value, BytesIO):
+            # BytesIOの場合はそのまま読み込む
+            value.seek(0)  # 読み取り位置を先頭に戻す
+            content = value.read()
+            is_file = True
+        elif isinstance(value, bytes):
+            # bytesの場合はそのまま使用
+            content = value
+            is_file = True
+        elif isinstance(value, dict):
+            # ネストした辞書の場合は再帰的に処理
+            _encode_to_tar(tar, full_name, value)
+            continue
+        else:
+            # その他の場合は文字列に変換してエンコード
+            content = str(value).encode("utf-8")
+
+        # TarInfoオブジェクトを作成
+        tar_info = tarfile.TarInfo(name=full_name)
+        tar_info.size = len(content)
+
+        # BytesIOの場合はPAXヘッダーに"is_file"をセット
+        if is_file:
+            tar_info.pax_headers = {"is_file": "true"}
+
+        # tarアーカイブに追加
+        tar.addfile(tar_info, BytesIO(content))
+
+
 def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
     """
     辞書からtar形式のデータを作成し、BytesIOとして返します。
@@ -77,6 +115,7 @@ def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
         キーをメンバー名、値を内容とする辞書。
         値がBytesIOの場合はバイナリデータとして、
         それ以外の場合は文字列に変換してUTF-8エンコードします。
+        値がNoneの場合にはスキップします。
 
     Returns
     -------
@@ -86,32 +125,7 @@ def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
     tar_buffer = BytesIO()
 
     with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
-        for name, value in data.items():
-            # 値をバイト列に変換
-            is_file = False
-            if isinstance(value, BytesIO):
-                # BytesIOの場合はそのまま読み込む
-                value.seek(0)  # 読み取り位置を先頭に戻す
-                content = value.read()
-                is_file = True
-            elif isinstance(value, bytes):
-                # bytesの場合はそのまま使用
-                content = value
-                is_file = True
-            else:
-                # その他の場合は文字列に変換してエンコード
-                content = str(value).encode("utf-8")
-
-            # TarInfoオブジェクトを作成
-            tar_info = tarfile.TarInfo(name=name)
-            tar_info.size = len(content)
-
-            # BytesIOの場合はPAXヘッダーに"is_file"をセット
-            if is_file:
-                tar_info.pax_headers = {"is_file": "true"}
-
-            # tarアーカイブに追加
-            tar.addfile(tar_info, BytesIO(content))
+        _encode_to_tar(tar, None, data)
 
     # 読み取り位置を先頭に戻す
     tar_buffer.seek(0)

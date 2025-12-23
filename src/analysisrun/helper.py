@@ -22,7 +22,7 @@ def read_dict(
         辞書の値となるカラム名
     """
 
-    df = pd.read_csv(filepath_or_buffer).astype(str)
+    df = pd.read_csv(filepath_or_buffer, dtype=str)
     return dict(zip(df[key], df[value]))
 
 
