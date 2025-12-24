@@ -11,7 +11,6 @@ from typing import (
     Generator,
     Iterable,
     LiteralString,
-    NamedTuple,
     Optional,
     Type,
 )
@@ -24,9 +23,10 @@ from pydantic import BaseModel, Field
 from analysisrun.__env import get_entrypoint, get_interactivity
 from analysisrun.__pipeable_io import (
     EXIT_CODE_INVALID_USAGE,
-    Cleansing,
+    EXIT_CODE_PROCESSING_ERROR,
+    Cleansing,  # noqa: F401
     ErrorResult,
-    ImageAnalysisResult,
+    ImageAnalysisResult,  # noqa: F401
     ParallelAnalysisOutput,
     create_parallel_analysis_input,
     create_parallel_analysis_output,
@@ -50,6 +50,10 @@ class Input[
     Parameters: BaseModel | None,
     ImageAnalysisResultsInput: NamedTupleLike[VirtualFile],
 ](BaseModel):
+    """
+    解析の入力を格納するモデル。
+    """
+
     image_analysis_results: ImageAnalysisResultsInput
     sample_names: VirtualFile
     parameters: Parameters
@@ -64,6 +68,11 @@ class Analyzer[
     Parameters: BaseModel | None,
     ImageAnalysisResults: NamedTupleLike[Fields],
 ](metaclass=ABCMeta):
+    """
+    各レーンの数値解析を行うAnalyzerの基底クラス。
+    このクラスを継承することで数値解析メソッドを実装します。
+    """
+
     params: Parameters
     """
     数値解析のパラメータ
@@ -95,6 +104,11 @@ class _PostprocessInput[Parameters: BaseModel | None](BaseModel):
 class Postprocessor[
     Parameters: BaseModel | None,
 ](metaclass=ABCMeta):
+    """
+    すべてのレーンの解析結果を総合し、後処理（評価、調整など）を行うPostprocessorの基底クラス。
+    後処理が必要な場合のみこのクラスを継承して実装する。
+    """
+
     params: Parameters
     """
     数値解析のパラメータ
@@ -110,6 +124,11 @@ class Postprocessor[
 
 
 class InMemoryOutput(Output):
+    """
+    解析で生成される画像をメモリ上に保存するOutput実装。
+    メモリに蓄積した画像データは、tar形式でシリアライズして外部に出力される。
+    """
+
     def __init__(self, store: dict[str, BytesIO]):
         self._store = store
 
@@ -167,6 +186,8 @@ def run_analysis[
         if output_dir is None:
             # 数値解析結果ファイルの置き場所を作業ディレクトリとする。
             output_dir = str(local_input.image_analysis_results[0].parent)
+        output_dir = Path(output_dir).absolute()
+
         sample_names = read_dict(local_input.sample_names, "data", "sample")
 
         lanes = _make_lanes(
@@ -179,7 +200,7 @@ def run_analysis[
         if not parallel:
             # 直列実行
             output = DefaultOutput(
-                show=interactivity == "notebook", parent_dir=Path(output_dir)
+                show=interactivity == "notebook", parent_dir=output_dir
             )
 
             def analyze(
@@ -229,12 +250,16 @@ def run_analysis[
                     ],
                 )
                 for output in outputs:
-                    match output:
+                    data_name = output[0]
+                    return_code = output[1]
+                    result = output[2]
+                    match result:
                         case ParallelAnalysisOutput():
-                            results.append(output.analysis_result)
+                            results.append(result.analysis_result)
                         case ErrorResult():
-                            raise RuntimeError(
-                                f"Parallel analysis execution failed: {output.error}"
+                            raise exit_with_error(
+                                return_code,
+                                f"数値解析の実行中にエラーが発生しました[{data_name}]\n{result.error}",
                             )
 
         if postprocessor is not None:
@@ -301,18 +326,26 @@ def run_analysis[
                 )
             except Exception as e:
                 raise exit_with_error(
-                    EXIT_CODE_INVALID_USAGE,
+                    EXIT_CODE_PROCESSING_ERROR,
                     "画像解析結果の読み込みに失敗しました。",
                     e,
                 )
-            fields = next(_zip_unpacked(_in.image_analysis_results))
-            a = analyzer(
-                params=_in.params,
-                sample_name=_in.sample_name,
-                image_analysis_results=image_analysis_results_type(*(fields)),
-                output=output,
-            )
-            analysis_result = a.analyze()
+            try:
+                fields = next(_zip_unpacked(_in.image_analysis_results))
+                a = analyzer(
+                    params=_in.params,
+                    sample_name=_in.sample_name,
+                    image_analysis_results=image_analysis_results_type(*(fields)),
+                    output=output,
+                )
+                analysis_result = a.analyze()
+            except Exception as e:
+                raise exit_with_error(
+                    EXIT_CODE_PROCESSING_ERROR,
+                    repr(e),
+                    e,
+                )
+
             _out = create_parallel_analysis_output(analysis_result, output_images)
             sys.stdout.buffer.write(_out.getvalue())
             sys.stdout.buffer.flush()
@@ -358,7 +391,8 @@ class _RunParallelAnalysisArgs:
 def _run_parallel_analysis(
     args: _RunParallelAnalysisArgs,
 ):
-    print(f"Start parallel analysis {args.fields[0].data_name}")
+    data_name = args.fields[0].data_name
+    print(f"数値解析を開始[{data_name}]")
     input_data = create_parallel_analysis_input(
         args.parameters,
         args.sample_names,
@@ -383,8 +417,9 @@ def _run_parallel_analysis(
     output = read_parallel_analysis_output(BytesIO(out))
 
     # FIXME: エラーハンドリング
+    #  エラーメッセージとしては最初に発生したものだけ表示し、すべてのスタックトレースはその前にすべて表示する
 
-    return output
+    return (data_name, proc.returncode, output)
 
 
 def _make_lanes(
@@ -409,60 +444,3 @@ def _make_lanes(
             "画像解析結果の読み込みに失敗しました。",
             e,
         )
-
-
-class ImageAnalysisResultsImpl(NamedTuple):
-    # activity_spots: VirtualFile = Field(description="画像解析結果csv")
-    activity_spots: VirtualFile = ImageAnalysisResult(
-        "画像解析結果csv", Cleansing(entity="Activity Spots")
-    )
-    # surrounding_spots: VirtualFile = Field(description="補強csv")
-
-
-class ImageAnalysisResults(NamedTuple):
-    activity_spots: Fields
-    # surrounding_spots: Fields
-
-
-class ParametersImpl(BaseModel):
-    threshold: int = Field(
-        description="解析に使用する閾値",
-    )
-
-
-class AAnalyzer(Analyzer[ParametersImpl, ImageAnalysisResults]):
-    def analyze(self) -> pd.Series:
-        # _ = 1 / 0  # FIXME:s
-        import time
-
-        time.sleep(2)
-        a = self.image_analysis_results.activity_spots
-        return pd.Series({"data": a.data_name, "len": len(a.data)})
-
-
-class APostprocessor(Postprocessor[ParametersImpl]):
-    def postprocess(self) -> pd.DataFrame:
-        df = self.analysis_results
-        df["threshold"] = self.params.threshold
-        return df
-
-
-if __name__ == "__main__":
-    result = run_analysis(
-        parameters_type=ParametersImpl,
-        image_analysis_result_input_type=ImageAnalysisResultsImpl,
-        image_analysis_results_type=ImageAnalysisResults,
-        analyzer=AAnalyzer,
-        postprocessor=APostprocessor,
-        manual_input=Input(
-            image_analysis_results=ImageAnalysisResultsImpl(
-                activity_spots=VirtualFile(
-                    Path("./tests/testdata/image_analysis_result.csv")
-                ),
-                # surrounding_spots=VirtualFile(Path("")),
-            ),
-            sample_names=VirtualFile(Path("./tests/testdata/samples.csv")),
-            parameters=ParametersImpl(threshold=100),
-        ),
-    )
-    print(result)

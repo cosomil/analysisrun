@@ -16,22 +16,45 @@ from analysisrun.cleansing import CleansedData, filter_by_entity
 from analysisrun.interactive import VirtualFile
 from analysisrun.scanner import Fields, Lanes
 
+EXIT_CODE_PROCESSING_ERROR = 1
 EXIT_CODE_INVALID_USAGE = 2
 
 
 class ErrorResult(BaseModel):
+    """
+    標準出力を通じて返されるエラー情報。
+    """
+
     error: str = Field(description="エラーメッセージ")
 
 
 def exit_with_error(
     code: int, message: str, exception: Optional[Exception] = None
 ) -> SystemExit:
+    """
+    解析の異常終了を行う。
+    標準出力にエラー情報を出力するほか、スタックトレースやユーザーフレンドリーな
+    エラーメッセージを標準エラー出力に出力する。
+
+    Parameters
+    ----------
+    code
+        終了コード
+    message
+        エラーメッセージ
+    exception
+        発生した例外オブジェクト
+
+    Returns
+    -------
+    SystemExit
+        与えられた終了コードをもつ例外。これをraiseすることでプロセスを終了する。
+    """
     interactivity = get_interactivity()
     if interactivity is None:
         out = create_tar_from_dict(ErrorResult(error=message).model_dump())
         sys.stdout.buffer.write(out.getvalue())
         sys.stdout.buffer.flush()
-        # FIXME: 例外の情報を標準エラー出力に流してもよいのでは？
         if exception is not None:
             print(exception, file=sys.stderr)
             traceback.print_exception(exception, file=sys.stderr)
@@ -44,6 +67,10 @@ def exit_with_error(
 
 @dataclass
 class Cleansing:
+    """
+    画像解析結果データのクレンジング設定。
+    """
+
     entity: str
 
     def _apply(self, df: pd.DataFrame) -> CleansedData:
@@ -51,6 +78,19 @@ class Cleansing:
 
 
 def ImageAnalysisResult(description: str, cleansing: Cleansing, **kwargs) -> Any:
+    """
+    画像解析結果入力用のアノテーションを作成する。
+    PydanticのFieldアノテーションのラッパー。
+
+    Parameters
+    ----------
+    description
+        フィールドの説明
+    cleansing
+        クレンジング設定
+    **kwargs
+        Fieldに渡す追加のキーワード引数
+    """
     return Annotated[
         VirtualFile,
         Field(description=description, **kwargs),
@@ -78,6 +118,9 @@ def _extract_virtualfile(v: Any) -> VirtualFile:
 def extract_image_analysis_results(
     v: NamedTupleLike[VirtualFile], read: Callable[[VirtualFile], pd.DataFrame]
 ):
+    """
+    入力として受け取った画像解析結果を読み込み、さらにクレンジングを施して返す。
+    """
     d = v._asdict()
     try:
         filtered = tuple(
@@ -109,6 +152,9 @@ def create_parallel_analysis_input(
     sample_names: dict[str, str],
     fields: tuple[Fields, ...],
 ):
+    """
+    数値解析プロセスに渡すための入力を作成するユーティリティ。
+    """
     data_name = fields[0].data_name
     input_data: dict[str, Any] = {
         "params": params.model_dump_json() if params is not None else None,
@@ -125,13 +171,16 @@ def create_parallel_analysis_input(
 
 
 @dataclass
-class RawParallelAnalysisInput[Parameters: BaseModel | None]:
+class _RawParallelAnalysisInput[Parameters: BaseModel | None]:
     params: Parameters
     sample_name: str
     image_analysis_results: tuple[Lanes, ...]
 
 
-def _read_pickle(v: VirtualFile):
+def _read_pickle_from_virtualfile(v: VirtualFile):
+    """
+    tarからデシリアライズしたVirtualFile(実際にはBytesIO)から、画像解析結果のDataFrameを読み込む。
+    """
     return pd.read_pickle(BytesIO(v.read()))
 
 
@@ -141,6 +190,10 @@ def read_parallel_analysis_input[Parameters: BaseModel | None](
     image_analysis_result_input_type: Type[NamedTupleLike[VirtualFile]],
     field_numbers: list[int],
 ):
+    """
+    tar形式でシリアライズされた数値解析の入力データを読み取り、
+    さらにクレンジング処理まで施して返す。
+    """
     params = None
     data_name = None
     sample_name = None
@@ -172,9 +225,11 @@ def read_parallel_analysis_input[Parameters: BaseModel | None](
         "No image analysis results found in the output."
     )
     image_analysis_input = image_analysis_result_input_type(*(image_analysis_results))
-    results = extract_image_analysis_results(image_analysis_input, _read_pickle)
+    results = extract_image_analysis_results(
+        image_analysis_input, _read_pickle_from_virtualfile
+    )
 
-    return RawParallelAnalysisInput[Parameters](
+    return _RawParallelAnalysisInput[Parameters](
         params=params,  # type: ignore
         sample_name=sample_name,
         image_analysis_results=tuple(
@@ -187,6 +242,9 @@ def read_parallel_analysis_input[Parameters: BaseModel | None](
 def create_parallel_analysis_output(
     analysis_result: pd.Series, images: dict[str, BytesIO] = {}
 ) -> BytesIO:
+    """
+    数値解析結果をtar形式にシリアライズする。
+    """
     analysis_result_data = BytesIO()
     analysis_result.to_pickle(analysis_result_data)
 
@@ -197,7 +255,7 @@ def create_parallel_analysis_output(
     return create_tar_from_dict(output_data)
 
 
-class RawParallelAnalysisOutput(BaseModel):
+class _RawParallelAnalysisOutput(BaseModel):
     analysis_result: BytesIO = Field(description="解析結果")
     images: dict[str, BytesIO] = Field(
         default={},
@@ -211,6 +269,10 @@ class RawParallelAnalysisOutput(BaseModel):
 
 @dataclass
 class ParallelAnalysisOutput:
+    """
+    1レーン分の画像解析結果。
+    """
+
     analysis_result: pd.Series
     """解析結果"""
     images: dict[str, BytesIO]
@@ -218,9 +280,12 @@ class ParallelAnalysisOutput:
 
 
 def read_parallel_analysis_output(_in: IO[bytes]):
+    """
+    tar形式でシリアライズされた数値解析の出力データを読み取る。
+    """
     d = read_tar_as_dict(_in)
     try:
-        raw = RawParallelAnalysisOutput(**d)
+        raw = _RawParallelAnalysisOutput(**d)
         return ParallelAnalysisOutput(
             analysis_result=pd.read_pickle(raw.analysis_result),
             images=raw.images,
