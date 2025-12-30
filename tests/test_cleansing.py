@@ -51,6 +51,25 @@ def test_filter_by_entity_with_custom_entity():
     assert list(result._data["Id"]) == [2, 4]
 
 
+def test_filter_by_entity_with_multiple_entities():
+    """複数エンティティ名を指定した場合のテスト"""
+    data = pd.DataFrame(
+        {
+            "Entity": ["Activity Spots", "Nuclei", "Cytoplasm", "Nuclei"],
+            "Value": [10, 20, 30, 40],
+            "Id": [1, 2, 3, 4],
+        }
+    )
+
+    result = filter_by_entity(data, entity=["Nuclei", "Cytoplasm"])
+
+    assert isinstance(result, CleansedData)
+    assert len(result._data) == 3
+    assert list(result._data["Entity"]) == ["Nuclei", "Cytoplasm", "Nuclei"]
+    assert list(result._data["Value"]) == [20, 30, 40]
+    assert list(result._data["Id"]) == [2, 3, 4]
+
+
 def test_filter_by_entity_with_cleansed_data():
     """CleansedDataを入力とした場合のテスト"""
     # テストデータの作成

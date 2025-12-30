@@ -3,6 +3,7 @@
 """
 
 import pandas as pd
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -16,7 +17,8 @@ class CleansedData:
 
 
 def filter_by_entity(
-    data: pd.DataFrame | CleansedData, entity: str = "Activity Spots"
+    data: pd.DataFrame | CleansedData,
+    entity: str | Iterable[str] = "Activity Spots",
 ) -> CleansedData:
     """
     指定されたエンティティ名でデータをフィルタリングする。
@@ -30,5 +32,8 @@ def filter_by_entity(
     """
 
     target_data = data if isinstance(data, pd.DataFrame) else data._data
-    target_data = target_data[target_data["Entity"] == entity]
+    if isinstance(entity, str):
+        target_data = target_data[target_data["Entity"] == entity]
+    else:
+        target_data = target_data[target_data["Entity"].isin(entity)]
     return CleansedData(_data=target_data)
