@@ -4,9 +4,12 @@ from pathlib import Path
 
 
 def is_notebook_env() -> bool:
-    """Jupyter Notebook環境かどうかを判定する"""
+    """
+    Jupyter Notebook環境かどうかを判定する。
+    PSEUDO_NBENV環境変数が設定されている場合は、擬似的にノートブック環境とみなす。
+    """
 
-    if os.getenv("NBENV"):
+    if os.getenv("PSEUDO_NBENV"):
         return True
 
     try:
@@ -35,7 +38,9 @@ def get_interactivity():
 
 
 def get_entrypoint() -> Path | None:
-    """スクリプトのエントリポイントのパスを取得する"""
+    """
+    スクリプトのエントリポイントのパスを取得する。
+    """
 
     main = sys.modules.get("__main__")
     if main and hasattr(main, "__file__") and main.__file__:
