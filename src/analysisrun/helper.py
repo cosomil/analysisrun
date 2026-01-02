@@ -32,8 +32,23 @@ def is_float(x: float | None) -> TypeGuard[float]:
 
 
 def cowsay(text: str) -> str:
+    """
+    メッセージをcowsay風にフォーマットする
+
+    Parameters
+    ----------
+    text
+        メッセージ
+
+    Returns
+    -------
+    str
+        cowsay風にフォーマットされたメッセージ
+    """
+
     max_line_width = 50
     raw_lines = text.splitlines() or [""]
+    min_cow_left_pad = 4
     _cow = r"""
 \   ^__^
  \  (oo)\_______
@@ -140,10 +155,8 @@ def cowsay(text: str) -> str:
     cow_lines = _cow.strip("\n").splitlines()
     bubble_width = max(_display_width(line) for line in bubble) if bubble else 0
     cow_width = max(_display_width(line) for line in cow_lines) if cow_lines else 0
-    min_left_pad = 4
-    left_pad = max((bubble_width - cow_width) // 2, 0)
-    if left_pad == 0:
-        left_pad = min_left_pad
+
+    left_pad = max((bubble_width - cow_width) // 2, min_cow_left_pad)
     padded_cow = [(" " * left_pad) + line for line in cow_lines]
 
     return "\n".join(bubble + padded_cow)
