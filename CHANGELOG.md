@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.0.7](https://github.com/cosomil/analysisrun/compare/v0.0.6...v0.0.7) - 2026-01-02
+- feat(analysisrun): Entity列を複数の値でフィルタリングできるようにする by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/41
+- feat(analysisrun): interactiveモジュールのブラッシュアップ  by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/43
+- feat(analysisrun): スクリプトの実行環境の情報を取得する内部用ユーティリティを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/44
+- feat(analysisrun): NamedTupleLikeを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/45
+- feat(analysisrun): マルチバイト文字対応のcowsayを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/46
+
 ## [v0.0.6](https://github.com/cosomil/analysisrun/compare/v0.0.5...v0.0.6) - 2025-06-16
 - docs by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/37
 - fix: マングリングエラーとpickleエラーを解消 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/39
