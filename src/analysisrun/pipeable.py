@@ -4,9 +4,16 @@ from typing import Optional
 import pandas as pd
 from pydantic import BaseModel
 
-from analysisrun.__typing import NamedTupleLike
+from analysisrun.__typing import NamedTupleLike, VirtualFileLike
 from analysisrun.runner import Output
 from analysisrun.scanner import Fields
+
+
+@dataclass
+class ManualInput[Params: Optional[BaseModel]]:
+    params: Params
+    image_analysis_results: VirtualFileLike
+    sample_names: VirtualFileLike
 
 
 @dataclass
