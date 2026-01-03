@@ -146,28 +146,66 @@ def extract_image_analysis_results(
             e,
         )
 
+@dataclass
+class _ImageAnalysisResult:
+    data: pd.DataFrame
+    cleansing: Cleansing
+
+
+def extract_image_analysis_results2(model: Type[BaseModel], v: BaseModel) -> dict[str, _ImageAnalysisResult]:
+    """
+    入力として受け取った画像解析結果を読み込み、さらにクレンジングを施して返す。
+    """
+    d = v.model_dump()
+    results = {}
+    for f in model.model_fields:
+        try:
+            cleansing = _extract_cleansing(
+                model.model_fields[f].default.__metadata__
+            )
+            virtualfile = _extract_virtualfile(d[f])
+        except Exception as e:
+            raise exit_with_error(
+                EXIT_CODE_INVALID_USAGE,
+                "image_analysis_result_input_typeの属性にはVirtualFile型を使用し、さらにデフォルト値にImageAnalysisResultを使用してください。",
+                e,
+            )
+
+        try:
+            data = _read_pickle_from_virtualfile(virtualfile)
+            results[f] = _ImageAnalysisResult(data=data, cleansing=cleansing)
+        except Exception as e:
+            raise exit_with_error(
+                EXIT_CODE_INVALID_USAGE,
+                "画像解析結果の読み込みに失敗しました。",
+                e,
+            )
+    return results
+
 
 def create_parallel_analysis_input(
     params: Optional[BaseModel],
     sample_names: dict[str, str],
-    fields: tuple[Fields, ...],
+    fields: dict[str, Fields],
 ):
     """
     数値解析プロセスに渡すための入力を作成するユーティリティ。
     """
-    data_name = fields[0].data_name
+    data_name = next(iter(fields.values())).data_name
     input_data: dict[str, Any] = {
         "params": params.model_dump_json() if params is not None else None,
         "data_name": data_name,
         "sample_name": sample_names.get(data_name, data_name),
     }
-    for idx, f in enumerate(fields):
+    for key, f in fields.items():
         # DataFrameをBytesIOに変換する。
         # tarのエントリには"is_file"ヘッダーが付与される。
         data = BytesIO()
         f.data.to_pickle(data)
-        input_data[f"image_analysis_results[{idx}]"] = data
+        input_data[f"image_analysis_results.{key}"] = data
     return create_tar_from_dict(input_data)
+
+
 
 
 @dataclass
@@ -177,17 +215,27 @@ class _RawParallelAnalysisInput[Parameters: BaseModel | None]:
     image_analysis_results: tuple[Lanes, ...]
 
 
-def _read_pickle_from_virtualfile(v: VirtualFile):
+@dataclass
+class _RawParallelAnalysisInput2[Parameters: BaseModel | None]:
+    params: Parameters
+    sample_name: str
+    image_analysis_results: dict[str, _ImageAnalysisResult]
+
+
+def _read_pickle_from_virtualfile(v: VirtualFile) -> pd.DataFrame:
     """
     tarからデシリアライズしたVirtualFile(実際にはBytesIO)から、画像解析結果のDataFrameを読み込む。
     """
     return pd.read_pickle(BytesIO(v.read()))
 
 
-def read_parallel_analysis_input[Parameters: BaseModel | None](
+def read_parallel_analysis_input[
+    Parameters: BaseModel | None,
+    ImageAnalysisResultInput: BaseModel,
+](
     _in: IO[bytes],
     parameters_type: Type[Parameters],
-    image_analysis_result_input_type: Type[NamedTupleLike[VirtualFile]],
+    image_analysis_result_input_type: Type[ImageAnalysisResultInput],
     field_numbers: list[int],
 ):
     """
@@ -197,7 +245,7 @@ def read_parallel_analysis_input[Parameters: BaseModel | None](
     params = None
     data_name = None
     sample_name = None
-    image_analysis_results = []
+    image_analysis_results = {}
     for name, value in read_tar_as_dict(_in).items():
         match name:
             case "params":
@@ -209,8 +257,9 @@ def read_parallel_analysis_input[Parameters: BaseModel | None](
             case "sample_name":
                 assert isinstance(value, str), "sample_name must be string"
                 sample_name = value
-            case _ if name.startswith("image_analysis_results["):
-                image_analysis_results.append(value)
+            case "image_analysis_results":
+                assert isinstance(value, dict), "image_analysis_results must be dict"
+                image_analysis_results = value
 
     if parameters_type is not type(None):
         assert params is not None, "params is required in the input."
@@ -224,12 +273,12 @@ def read_parallel_analysis_input[Parameters: BaseModel | None](
     assert len(image_analysis_results) > 0, (
         "No image analysis results found in the output."
     )
-    image_analysis_input = image_analysis_result_input_type(*(image_analysis_results))
+    image_analysis_result_input = image_analysis_result_input_type(*(image_analysis_results))
     results = extract_image_analysis_results(
-        image_analysis_input, _read_pickle_from_virtualfile
+        image_analysis_result_input, _read_pickle_from_virtualfile
     )
 
-    return _RawParallelAnalysisInput[Parameters](
+    return _RawParallelAnalysisInput2[Parameters](
         params=params,  # type: ignore
         sample_name=sample_name,
         image_analysis_results=tuple(

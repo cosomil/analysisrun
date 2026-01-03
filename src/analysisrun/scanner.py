@@ -89,7 +89,7 @@ class Lanes:
 
         if len(whole_data._data) == 0:
             raise ValueError("cannot scan empty data.")
-        data = whole_data._data
+        data = whole_data._data.copy()
         split_data = data["Filename"].str.split("_000_", expand=True)
         data["ImageAnalysisMethod"] = split_data[0]
         data["Data"] = split_data[1].str.split(".", expand=True)[0]
