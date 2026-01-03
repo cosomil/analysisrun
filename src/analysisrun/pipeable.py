@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
-import sys
 from typing import IO, Callable, Literal, Optional, Type
 
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from analysisrun.__typing import NamedTupleLike, VirtualFileLike
 from analysisrun.runner import Output
@@ -13,9 +12,49 @@ from analysisrun.scanner import Fields
 
 @dataclass
 class ManualInput[Params: BaseModel | None]:
+    """
+    ローカル実行時に使用される数値解析の入力データ
+    """
+
     params: Params
+    """
+    解析全体に関わるパラメータ
+    """
     image_analysis_results: dict[str, VirtualFileLike]
+    """
+    解析対象となる画像解析結果CSVデータセット
+    """
     sample_names: VirtualFileLike
+    """
+    サンプル名CSVファイル（サンプル名とレーン番号の対応表）
+    """
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+    }
+
+
+class InputModel[
+    Params: BaseModel | None,
+    ImageAnalysisResultsInput: NamedTupleLike[VirtualFileLike],
+](BaseModel):
+    """
+    ローカル実行時に使用される数値解析の入力データモデル
+
+    manual_inputのバリデーションやインタラクティブな入力のバリデーションに使用する
+    """
+
+    image_analysis_results: ImageAnalysisResultsInput = Field(
+        description="画像解析結果CSVデータセット"
+    )
+    sample_names: VirtualFileLike = Field(
+        description="サンプル名CSVファイル（サンプル名とレーン番号の対応表）"
+    )
+    parameters: Params = Field(description="解析全体に関わるパラメータ")
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+    }
 
 
 @dataclass

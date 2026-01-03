@@ -6,7 +6,9 @@ from typing import IO, NoReturn, Optional
 from pydantic import BaseModel, Field
 
 from analysisrun.__env import get_interactivity
+from analysisrun.__typing import NamedTupleLike
 from analysisrun.helper import cowsay
+from analysisrun.interactive import VirtualFile
 from analysisrun.tar import create_tar_from_dict
 
 
@@ -74,3 +76,42 @@ def exit_with_error(
         _print(cowsay(message), stdout)
     stdout.flush()
     sys.exit(code.value)
+
+
+class AnalysisInputModel[
+    Params: BaseModel | None,
+    ImageAnalysisResultsInput: NamedTupleLike[VirtualFile],
+](BaseModel):
+    """
+    分散実行時に使用される解析(analyze)の入力データモデル
+
+    `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
+    """
+
+    data_name: str = Field(description="解析対象のデータ名")
+    sample_name: str = Field(description="解析対象のサンプル名")
+    params: Params = Field(description="解析全体に関わるパラメータ")
+    image_analysis_results: ImageAnalysisResultsInput = Field(
+        description="画像解析結果CSVデータ"
+    )
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+    }
+
+
+class PostprocessInputModel[
+    Params: BaseModel | None,
+](BaseModel):
+    """
+    分散実行時に使用される後処理(postprocess)の入力データモデル
+
+    `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
+    """
+
+    analysis_results: VirtualFile = Field(description="解析結果データセット")
+    params: Params = Field(description="解析全体に関わるパラメータ")
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+    }
