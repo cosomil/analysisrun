@@ -9,13 +9,13 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
 
     エントリのPAXヘッダー"is_file"がセットされている場合はBytesIOとして、そうでない場合は文字列として扱う。
 
-    エントリ名に「.」が含まれる場合は、ネストした辞書を構築する。
-    例: エントリ "foo.bar" は {"foo": {"bar": value}} のような構造となる。
+    エントリ名に「/」が含まれる場合は、ネストした辞書を構築する。
+    例: エントリ "foo/bar" は {"foo": {"bar": value}} のような構造となる。
 
     Raises
     ------
     ValueError
-        構造に矛盾がある場合（例: "foo"と"foo.bar"が両方存在する場合）
+        構造に矛盾がある場合（例: "foo"と"foo/bar"が両方存在する場合）
     """
 
     # tar形式として解析（直接ストリーム処理）
@@ -37,15 +37,15 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
                         # それ以外の場合は文字列として保存（UTF-8でデコード）
                         value = content.decode("utf-8").strip()
 
-                    # エントリ名を「.」で分割してネストした辞書を構築
-                    keys = member.name.split(".")
+                    # エントリ名を「/」で分割してネストした辞書を構築
+                    keys = member.name.split("/")
                     current = result
 
                     for i, key in enumerate(keys[:-1]):
                         if key not in current:
                             current[key] = {}
                         elif not isinstance(current[key], dict):
-                            existing_path = ".".join(keys[: i + 1])
+                            existing_path = "/".join(keys[: i + 1])
                             raise ValueError(
                                 f"tar mapping error: {member.name} requires {existing_path} to be a dictionary, but {existing_path} already has a value"
                             )
@@ -55,7 +55,7 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
                     last_key = keys[-1]
                     if last_key in current:
                         if isinstance(current[last_key], dict):
-                            existing_path = ".".join(keys)
+                            existing_path = "/".join(keys)
                             raise ValueError(
                                 f"tar mapping error: {member.name} requires {existing_path} to be a value, but {existing_path} is a dictionary"
                             )
@@ -71,7 +71,7 @@ def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, 
         if value is None:
             continue
 
-        full_name = f"{prefix}.{name}" if prefix else name
+        full_name = f"{prefix}/{name}" if prefix else name
 
         # 値をバイト列に変換
         is_file = False

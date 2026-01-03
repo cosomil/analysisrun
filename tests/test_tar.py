@@ -23,8 +23,8 @@ def test_read_tar_as_dict():
             "count": 10,
             "threshold": 0.5,
             "data": BytesIO(fileData),
-            "parameters.covariance": 0.1,
-            "parameters.max_iterations": 100,
+            "parameters/covariance": 0.1,
+            "parameters/max_iterations": 100,
         }
     )
 
