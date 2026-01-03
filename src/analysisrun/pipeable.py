@@ -132,8 +132,8 @@ def read_context[
     params: Type[Params],
     image_analysis_results: Type[ImageAnalysisResults],
     manual_input: Optional[ManualInput[Params]] = None,
-    stdin: IO[bytes] = sys.stdin.buffer,
-    stdout: IO[bytes] = sys.stdout.buffer,
+    stdin: Optional[IO[bytes]] = None,
+    stdout: Optional[IO[bytes]] = None,
     output_dir: Optional[str | Path] = None,
 ) -> AnalysisContext[Params, ImageAnalysisResults]:
     """

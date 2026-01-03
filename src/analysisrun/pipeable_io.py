@@ -11,6 +11,9 @@ from analysisrun.helper import cowsay
 from analysisrun.interactive import VirtualFile
 from analysisrun.tar import create_tar_from_dict
 
+# TODO: 標準出力に意味を持たせることになるので、解析処理の中での標準出力への出力が標準エラー出力に向かうように細工しなければならない
+# see: https://stackoverflow.com/questions/8391411/how-to-block-calls-to-print/67055472
+
 
 class ExitCodes(Enum):
     """
