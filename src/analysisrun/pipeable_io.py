@@ -6,7 +6,6 @@ from typing import IO, NoReturn, Optional
 from pydantic import BaseModel, Field
 
 from analysisrun.__env import get_interactivity
-from analysisrun.__typing import NamedTupleLike
 from analysisrun.helper import cowsay
 from analysisrun.interactive import VirtualFile
 from analysisrun.tar import create_tar_from_dict
@@ -83,7 +82,7 @@ def exit_with_error(
 
 class AnalysisInputModel[
     Params: BaseModel | None,
-    ImageAnalysisResultsInput: NamedTupleLike[VirtualFile],
+    ImageAnalysisResultsInput: BaseModel,
 ](BaseModel):
     """
     分散実行時に使用される解析(analyze)の入力データモデル
