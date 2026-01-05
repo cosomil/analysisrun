@@ -81,7 +81,7 @@ def exit_with_error(
 
 
 class AnalysisInputModel[
-    Params: BaseModel | None,
+    Params: BaseModel,
     ImageAnalysisResultsInput: BaseModel,
 ](BaseModel):
     """
@@ -103,7 +103,7 @@ class AnalysisInputModel[
 
 
 class PostprocessInputModel[
-    Params: BaseModel | None,
+    Params: BaseModel,
 ](BaseModel):
     """
     分散実行時に使用される後処理(postprocess)の入力データモデル

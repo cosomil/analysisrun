@@ -1,10 +1,10 @@
-from io import BytesIO
 import json
 import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import (
     IO,
@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from analysisrun.__env import get_entrypoint, get_interactivity
 from analysisrun.__typing import NamedTupleLike, VirtualFileLike
 from analysisrun.cleansing import CleansedData, filter_by_entity
+from analysisrun.helper import read_dict
 from analysisrun.interactive import VirtualFile, scan_model_input
 from analysisrun.pipeable_io import (
     AnalysisInputModel,
@@ -60,7 +61,7 @@ class Output(Protocol):
 
 
 @dataclass
-class ManualInput[Params: BaseModel | None]:
+class ManualInput[Params: BaseModel]:
     """
     ローカル実行時に使用される数値解析の入力データ
     """
@@ -121,10 +122,7 @@ def _get_image_analysis_specs[
     ImageAnalysisResultsのデフォルト値に定義されたImageAnalysisResultSpecを取得する。
     """
 
-    if not hasattr(image_analysis_results, "_fields"):
-        raise TypeError("image_analysis_results must be a NamedTupleLike")
-
-    field_defaults = getattr(image_analysis_results, "_field_defaults", {}) or {}
+    field_defaults = image_analysis_results._field_defaults
     specs: dict[str, ImageAnalysisResultSpec] = {}
 
     for name in image_analysis_results._fields:  # type: ignore[attr-defined]
@@ -162,7 +160,7 @@ def create_image_analysis_results_input_model[
 
 
 class InputModel[
-    Params: BaseModel | None,
+    Params: BaseModel,
     ImageAnalysisResultsInput: BaseModel,
 ](BaseModel):
     """
@@ -186,7 +184,7 @@ class InputModel[
 
 @dataclass
 class AnalyzeArgs[
-    Params: BaseModel | None,
+    Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[Fields],
 ]:
     params: Params
@@ -204,7 +202,7 @@ class AnalyzeArgs[
 
 
 @dataclass
-class PostprocessArgs[Params: BaseModel | None]:
+class PostprocessArgs[Params: BaseModel]:
     params: Params
     """
     解析全体に関わるパラメータ
@@ -222,16 +220,14 @@ class _BaseState:
 
 
 @dataclass
-class _AnalysisState[ParamsT: BaseModel | None, ImageInputModelT: BaseModel](
-    _BaseState
-):
+class _AnalysisState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
     parsed_input: AnalysisInputModel[ParamsT, ImageInputModelT]
     specs: dict[str, ImageAnalysisResultSpec]
     field_numbers: list[int]
 
 
 @dataclass
-class _PostprocessState[ParamsT: BaseModel | None](_BaseState):
+class _PostprocessState[ParamsT: BaseModel](_BaseState):
     parsed_input: PostprocessInputModel[ParamsT]
 
 
@@ -253,7 +249,7 @@ class _ParallelState(_BaseState):
 
 @dataclass
 class AnalysisContext[
-    Params: BaseModel | None,
+    Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[Fields],
 ]:
     """
@@ -319,15 +315,18 @@ class AnalysisContext[
         except SystemExit:
             raise
         except Exception as exc:
-            if isinstance(self.state, (_AnalysisState, _PostprocessState)):
-                exit_with_error(
-                    ExitCodes.PROCESSING_ERROR,
-                    "解析処理中にエラーが発生しました。入力データやパラメータを確認してください。",
-                    stdout,
-                    stderr,
-                    exc,
-                )
-            raise
+            message = (
+                "後処理でエラーが発生しました。入力データやパラメータを確認してください。"
+                if isinstance(self.state, _PostprocessState)
+                else "解析処理中にエラーが発生しました。入力データやパラメータを確認してください。"
+            )
+            exit_with_error(
+                ExitCodes.PROCESSING_ERROR,
+                message,
+                stdout,
+                stderr,
+                exc,
+            )
 
     def _run_analysis_only(
         self,
@@ -344,7 +343,7 @@ class AnalysisContext[
         output = _TarCollectingOutput()
         try:
             cleansed_data = _load_and_cleanse_image_results(
-                parsed.image_analysis_results, specs
+                parsed.image_analysis_results, specs, data_format="pickle"
             )
             lanes = _build_fields_namedtuple(
                 self.image_analysis_results,
@@ -379,7 +378,7 @@ class AnalysisContext[
         assert isinstance(self.state, _PostprocessState)
         state = self.state
         parsed = state.parsed_input
-        analysis_results = pd.read_pickle(parsed.analysis_results)
+        analysis_results = pd.read_pickle(parsed.analysis_results.unwrap())
 
         try:
             result_df = (
@@ -444,7 +443,7 @@ class AnalysisContext[
         output_dir = state.output_dir
         entrypoint = state.entrypoint
 
-        params_payload = _encode_params(self.params)
+        params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         def _build_tar_buffer(data_name: str, sample_name: str) -> BytesIO:
@@ -509,7 +508,7 @@ class AnalysisContext[
 
 
 def read_context[
-    Params: BaseModel | None,
+    Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[Fields],
 ](
     params: Type[Params],
@@ -564,7 +563,7 @@ def read_context[
             tar_dict = read_tar_as_dict(_stdin)
             tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
             parsed = AnalysisInput(**tar_dict)
-            params_value = parsed.params  # type: ignore[assignment]
+            params_value = parsed.params
         except Exception as exc:
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
@@ -585,7 +584,7 @@ def read_context[
             tar_dict = read_tar_as_dict(_stdin)
             tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
             parsed = PostprocessInput(**tar_dict)
-            params_value = parsed.params  # type: ignore[assignment]
+            params_value = parsed.params
         except Exception as exc:
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
@@ -623,23 +622,30 @@ def read_context[
                 )
             local_input = scan_model_input(LocalInputModel)
 
-        params_value = local_input.params  # type: ignore[name-defined]
+        params_value = local_input.params
         if output_dir_path is None:
-            output_dir_path = _derive_output_dir(
-                local_input.image_analysis_results  # type: ignore[name-defined]
-            )
+            output_dir_path = _derive_output_dir(local_input.image_analysis_results)
         output_dir_path.mkdir(parents=True, exist_ok=True)
         output_impl = _FileOutput(output_dir_path)
 
         raw_data = _load_image_results_raw(
-            local_input.image_analysis_results  # type: ignore[name-defined]
+            local_input.image_analysis_results, data_format="csv"
         )
         if mode == "sequential":
             cleansed_data = {
                 name: _apply_cleansing_pipeline(df, specs[name])
                 for name, df in raw_data.items()
             }
-        sample_pairs = _load_sample_pairs(local_input.sample_names)  # type: ignore[name-defined]
+        sample_pairs = [
+            (str(data), str(sample))
+            for data, sample in read_dict(
+                local_input.sample_names.unwrap(),
+                key="data",
+                value="sample",
+            ).items()
+        ]
+        if not sample_pairs:
+            raise ValueError("sample_names CSVが空です。")
 
         if mode == "sequential":
             assert cleansed_data is not None
@@ -708,13 +714,24 @@ class _NullOutput(Output):
         plt.close(fig)
 
 
-def _load_dataframe_from_virtual_file(vfile: VirtualFile) -> pd.DataFrame:
-    # 入力はpickleシリアライズされたDataFrameである前提
-    return pd.read_pickle(vfile)
+def _load_dataframe_from_virtual_file(
+    vfile: VirtualFile, *, data_format: Literal["pickle", "csv"]
+) -> pd.DataFrame:
+    """
+    VirtualFileからDataFrameを読み込む。
+
+    data_formatで指定された形式でのみ読み込みを試みる。
+    """
+
+    if data_format == "pickle":
+        return pd.read_pickle(vfile.unwrap())
+    if data_format == "csv":
+        return pd.read_csv(vfile.unwrap())
 
 
 def _load_image_results_raw(
     image_analysis_results_model: BaseModel,
+    data_format: Literal["pickle", "csv"],
 ) -> dict[str, pd.DataFrame]:
     """
     ImageAnalysisResultsInputから各データをDataFrameとして読み込む。
@@ -724,7 +741,7 @@ def _load_image_results_raw(
     raw: dict[str, pd.DataFrame] = {}
     for name in image_analysis_results_model.model_fields:
         vfile = getattr(image_analysis_results_model, name)
-        raw[name] = _load_dataframe_from_virtual_file(vfile)
+        raw[name] = _load_dataframe_from_virtual_file(vfile, data_format=data_format)
     return raw
 
 
@@ -742,10 +759,15 @@ def _apply_cleansing_pipeline(
 
 
 def _load_and_cleanse_image_results(
-    image_analysis_results_model: BaseModel, specs: dict[str, ImageAnalysisResultSpec]
+    image_analysis_results_model: BaseModel,
+    specs: dict[str, ImageAnalysisResultSpec],
+    *,
+    data_format: Literal["pickle", "csv"],
 ) -> dict[str, CleansedData]:
     cleansed_data: dict[str, CleansedData] = {}
-    raw_data = _load_image_results_raw(image_analysis_results_model)
+    raw_data = _load_image_results_raw(
+        image_analysis_results_model, data_format=data_format
+    )
     for name, spec in specs.items():
         df = raw_data[name]
         cleansed_data[name] = _apply_cleansing_pipeline(df, spec)
@@ -801,38 +823,11 @@ def _maybe_load_json(value: Any) -> Any:
     return value
 
 
-def _encode_params(params: BaseModel | None) -> str | None:
-    if isinstance(params, BaseModel):
-        return params.model_dump_json()
-    return None
-
-
 def _derive_output_dir(image_analysis_results_model: BaseModel) -> Path:
     for value in image_analysis_results_model.model_dump(mode="python").values():
         if isinstance(value, Path):
             return value.parent
     return Path.cwd()
-
-
-def _load_sample_pairs(sample_file: VirtualFile) -> list[tuple[str, str]]:
-    df = pd.read_csv(sample_file, dtype=str)
-    if df.empty:
-        raise ValueError("sample_names CSVが空です。")
-
-    df.columns = [str(col).strip() for col in df.columns]
-    lower_map = {col.lower(): col for col in df.columns}
-    data_col = lower_map.get("data_name") or lower_map.get("lane") or df.columns[0]
-    sample_col = lower_map.get("sample_name") or lower_map.get("sample")
-    if sample_col is None:
-        sample_col = df.columns[1] if len(df.columns) > 1 else None
-
-    if sample_col is None:
-        raise ValueError("sample_names CSVには2列以上のデータが必要です。")
-
-    pairs: list[tuple[str, str]] = []
-    for _, row in df.iterrows():
-        pairs.append((str(row[data_col]), str(row[sample_col])))
-    return pairs
 
 
 def _extract_images_from_tar_dict(tar_dict: dict[str, Any]) -> dict[str, BytesIO]:
