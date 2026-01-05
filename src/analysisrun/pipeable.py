@@ -84,16 +84,17 @@ class ManualInput[Params: BaseModel]:
     }
 
 
+CleansingFunc = Callable[[pd.DataFrame | CleansedData], CleansedData]
+
+
 @dataclass
-class ImageAnalysisResultSpec:
+class _ImageAnalysisResultSpec:
     """
     画像解析データの説明とクレンジング処理を保持する。
     """
 
     description: str
-    cleansing: tuple[Callable[[pd.DataFrame | CleansedData], CleansedData], ...] = (
-        field(default_factory=tuple)
-    )
+    cleansing: tuple[CleansingFunc, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.cleansing:
@@ -101,6 +102,15 @@ class ImageAnalysisResultSpec:
         # tupleへ正規化（リストなどを許容）
         if not isinstance(self.cleansing, tuple):
             self.cleansing = tuple(self.cleansing)  # type: ignore
+
+
+def image_analysis_result_spec(
+    description: str, cleansing: CleansingFunc | tuple[CleansingFunc, ...]
+) -> Any:
+    return _ImageAnalysisResultSpec(
+        description=description,
+        cleansing=cleansing if isinstance(cleansing, tuple) else (cleansing,),
+    )
 
 
 def entity_filter(
@@ -117,17 +127,17 @@ def _get_image_analysis_specs[
     ImageAnalysisResults: NamedTupleLike[Fields],
 ](
     image_analysis_results: Type[ImageAnalysisResults],
-) -> dict[str, ImageAnalysisResultSpec]:
+) -> dict[str, _ImageAnalysisResultSpec]:
     """
     ImageAnalysisResultsのデフォルト値に定義されたImageAnalysisResultSpecを取得する。
     """
 
     field_defaults = image_analysis_results._field_defaults
-    specs: dict[str, ImageAnalysisResultSpec] = {}
+    specs: dict[str, _ImageAnalysisResultSpec] = {}
 
     for name in image_analysis_results._fields:  # type: ignore[attr-defined]
         spec = field_defaults.get(name)
-        if not isinstance(spec, ImageAnalysisResultSpec):
+        if not isinstance(spec, _ImageAnalysisResultSpec):
             raise ValueError(
                 f"{image_analysis_results.__name__}.{name} must have ImageAnalysisResultSpec as default"
             )
@@ -222,7 +232,7 @@ class _BaseState:
 @dataclass
 class _AnalysisState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
     parsed_input: AnalysisInputModel[ParamsT, ImageInputModelT]
-    specs: dict[str, ImageAnalysisResultSpec]
+    specs: dict[str, _ImageAnalysisResultSpec]
     field_numbers: list[int]
 
 
@@ -746,7 +756,7 @@ def _load_image_results_raw(
 
 
 def _apply_cleansing_pipeline(
-    data: pd.DataFrame | CleansedData, spec: ImageAnalysisResultSpec
+    data: pd.DataFrame | CleansedData, spec: _ImageAnalysisResultSpec
 ) -> CleansedData:
     cleansed: pd.DataFrame | CleansedData = data
     for fn in spec.cleansing:
@@ -760,7 +770,7 @@ def _apply_cleansing_pipeline(
 
 def _load_and_cleanse_image_results(
     image_analysis_results_model: BaseModel,
-    specs: dict[str, ImageAnalysisResultSpec],
+    specs: dict[str, _ImageAnalysisResultSpec],
     *,
     data_format: Literal["pickle", "csv"],
 ) -> dict[str, CleansedData]:

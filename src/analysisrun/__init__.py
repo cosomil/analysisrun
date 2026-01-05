@@ -1,7 +1,7 @@
 from analysisrun.pipeable import (
     AnalysisContext,
     AnalyzeArgs,
-    ImageAnalysisResultSpec,
+    _ImageAnalysisResultSpec,
     ManualInput,
     PostprocessArgs,
     entity_filter,
@@ -11,7 +11,7 @@ from analysisrun.pipeable import (
 __all__ = [
     "AnalysisContext",
     "AnalyzeArgs",
-    "ImageAnalysisResultSpec",
+    "_ImageAnalysisResultSpec",
     "ManualInput",
     "PostprocessArgs",
     "entity_filter",

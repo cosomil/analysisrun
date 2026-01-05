@@ -15,10 +15,10 @@ import pytest
 from pydantic import BaseModel
 
 from analysisrun.pipeable import (
-    ImageAnalysisResultSpec,
     ManualInput,
     create_image_analysis_results_input_model,
     entity_filter,
+    image_analysis_result_spec,
     read_context,
 )
 from analysisrun.scanner import Fields
@@ -34,9 +34,9 @@ class Params(BaseModel):
 
 
 class ImageResults(NamedTuple):
-    activity_spots: Fields = ImageAnalysisResultSpec(
+    activity_spots: Fields = image_analysis_result_spec(
         description="Activity spots",
-        cleansing=(entity_filter("Activity Spots"),),
+        cleansing=entity_filter("Activity Spots"),
     )
 
 
