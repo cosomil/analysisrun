@@ -1,7 +1,8 @@
 import sys
 import traceback
+from contextlib import contextmanager
 from enum import Enum
-from typing import IO, NoReturn, Optional
+from typing import IO, Iterator, NoReturn, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,8 +11,22 @@ from analysisrun.helper import cowsay
 from analysisrun.interactive import VirtualFile
 from analysisrun.tar import create_tar_from_dict
 
-# TODO: 標準出力に意味を持たせることになるので、解析処理の中での標準出力への出力が標準エラー出力に向かうように細工しなければならない
-# see: https://stackoverflow.com/questions/8391411/how-to-block-calls-to-print/67055472
+
+@contextmanager
+def redirect_stdout_to_stderr() -> Iterator[None]:
+    """
+    標準出力を標準エラー出力にリダイレクトするコンテキストマネージャ。
+    
+    解析処理中に print() などで標準出力に出力されると、
+    tarフォーマットの出力が破損するため、標準出力を標準エラー出力に
+    リダイレクトすることで、構造化されたデータを安全に出力できるようにする。
+    """
+    original_stdout = sys.stdout
+    try:
+        sys.stdout = sys.stderr
+        yield
+    finally:
+        sys.stdout = original_stdout
 
 
 class ExitCodes(Enum):
