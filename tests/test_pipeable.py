@@ -21,6 +21,7 @@ from analysisrun.pipeable import (
     image_analysis_result_spec,
     read_context,
 )
+from analysisrun.pipeable_io import redirect_stdout_to_stderr
 from analysisrun.scanner import Fields
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 
@@ -54,6 +55,26 @@ def test_create_image_analysis_results_input_model_requires_spec():
 
     with pytest.raises(ValueError):
         create_image_analysis_results_input_model(InvalidImageResults)
+
+
+def test_redirect_stdout_to_stderr():
+    """
+    redirect_stdout_to_stderr関数が正しくstderrパラメータを使用することを確認する。
+    """
+    import sys
+    
+    # stderrとしてBytesIOを用意
+    stderr_buf = BytesIO()
+    
+    # print文の出力先を確認
+    with redirect_stdout_to_stderr(stderr_buf):
+        print("Test message")
+        sys.stdout.flush()
+    
+    # stderrに出力されていることを確認
+    stderr_buf.seek(0)
+    output = stderr_buf.read().decode("utf-8")
+    assert "Test message" in output
 
 
 def test_run_analysis_sequential_with_manual_input(monkeypatch):
