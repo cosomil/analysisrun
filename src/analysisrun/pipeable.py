@@ -854,11 +854,9 @@ def _extract_images_from_tar_dict(tar_dict: dict[str, Any]) -> dict[str, BytesIO
 def _save_images_to_dir(
     images: dict[str, BytesIO], output_dir: Path, data_name: str
 ) -> None:
-    target_dir = output_dir / data_name
-    target_dir.mkdir(parents=True, exist_ok=True)
     for name, buf in images.items():
         buf.seek(0)
-        path = target_dir / name
+        path = output_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as f:
             f.write(buf.read())
