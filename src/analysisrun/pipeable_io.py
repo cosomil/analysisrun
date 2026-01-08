@@ -30,7 +30,9 @@ def redirect_stdout_to_stderr() -> Iterator[None]:
     Notes
     -----
     このコンテキストマネージャはスレッドセーフではない。
-    sys.stdoutの変更はプロセス全体に影響するため、マルチスレッド環境では注意が必要。
+    sys.stdoutの変更はプロセス全体に影響するため、マルチスレッド環境では
+    複数のスレッドが同時にsys.stdoutを変更しようとすると競合状態が発生する可能性がある。
+    このコンテキストマネージャはシングルスレッド環境での使用を想定している。
     """
     original_stdout = sys.stdout
     try:
