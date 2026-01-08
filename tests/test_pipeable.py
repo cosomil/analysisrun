@@ -21,6 +21,7 @@ from analysisrun.pipeable import (
     image_analysis_result_spec,
     read_context,
 )
+from analysisrun.pipeable_io import redirect_stdout_to_stderr
 from analysisrun.scanner import Fields
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 
@@ -54,6 +55,26 @@ def test_create_image_analysis_results_input_model_requires_spec():
 
     with pytest.raises(ValueError):
         create_image_analysis_results_input_model(InvalidImageResults)
+
+
+def test_redirect_stdout_to_stderr():
+    """
+    redirect_stdout_to_stderr関数が正しくstderrパラメータを使用することを確認する。
+    """
+    import sys
+    
+    # stderrとしてBytesIOを用意
+    stderr_buf = BytesIO()
+    
+    # print文の出力先を確認
+    with redirect_stdout_to_stderr(stderr_buf):
+        print("Test message")
+        sys.stdout.flush()
+    
+    # stderrに出力されていることを確認
+    stderr_buf.seek(0)
+    output = stderr_buf.read().decode("utf-8")
+    assert "Test message" in output
 
 
 def test_run_analysis_sequential_with_manual_input(monkeypatch):
@@ -151,6 +172,68 @@ def test_run_analysis_only_outputs_tar(monkeypatch):
     assert images["plot.png"].getbuffer().nbytes > 0
 
 
+def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
+    """
+    解析処理中にprint文があっても標準出力が破損しないことを確認する。
+    
+    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
+    print文が標準エラー出力に向かうことを確認する。
+    """
+    monkeypatch.setenv("ANALYSISRUN_METHOD", "analyze")
+    stdout_buf = BytesIO()
+
+    tar_buf = create_tar_from_dict(
+        {
+            "data_name": "0000",
+            "sample_name": "SampleA",
+            "params": Params(threshold=3).model_dump_json(),
+            "image_analysis_results/activity_spots": _load_pickled_df(
+                IMAGE_ANALYSIS_RESULT_CSV
+            ),
+        }
+    )
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    def analyze(args):
+        # ユーザーコードにprint文が含まれているケース
+        print("Debug: Starting analysis")
+        df = args.image_analysis_results.activity_spots.data
+        print(f"Debug: Processing {len(df)} rows")
+        total = int(df["Value"].sum())
+        print(f"Debug: Total value is {total}")
+        return pd.Series({"total_value": total})
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=analyze)
+
+    assert excinfo.value.code == 0
+    
+    # 標準出力はtarフォーマットとして正常に読み込めるべき
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+
+    series_buf = tar_result["analysis_result"]
+    assert isinstance(series_buf, BytesIO)
+    series = pd.read_pickle(series_buf)
+    
+    # 結果は正しく取得できるべき
+    filtered = pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV)
+    filtered = filtered[filtered["Entity"] == "Activity Spots"]
+    filtered = filtered[filtered["Filename"].str.contains("0000")]
+    assert series["total_value"] == int(filtered["Value"].sum())
+    
+    # print文の出力は標準エラー出力に出ているべき
+    captured = capsys.readouterr()
+    assert "Debug: Starting analysis" in captured.err
+    assert "Debug: Processing" in captured.err
+    assert "Debug: Total value is" in captured.err
+
+
 def test_run_postprocess_only_outputs_tar(monkeypatch):
     monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
     stdout_buf = BytesIO()
@@ -202,3 +285,68 @@ def test_run_postprocess_only_outputs_tar(monkeypatch):
     assert set(json_entries.keys()) == {"0000", "0001"}
     first = json.loads(json_entries["0000"].getvalue())
     assert first["scaled"] == 20
+
+
+def test_run_postprocess_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
+    """
+    後処理中にprint文があっても標準出力が破損しないことを確認する。
+    
+    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
+    print文が標準エラー出力に向かうことを確認する。
+    """
+    monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
+    stdout_buf = BytesIO()
+
+    analysis_results = pd.DataFrame(
+        [
+            {"data_name": "0000", "sample_name": "SampleA", "total_value": 4},
+            {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
+        ]
+    )
+    buf = BytesIO()
+    analysis_results.to_pickle(buf)
+    buf.seek(0)
+
+    tar_buf = create_tar_from_dict(
+        {
+            "analysis_results": buf,
+            "params": Params(threshold=5).model_dump_json(),
+        }
+    )
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    def analyze(args):
+        raise RuntimeError("analyze should not be called in postprocess only mode")
+
+    def postprocess(args):
+        print("Debug: Starting postprocess")
+        df = args.analysis_results.copy()
+        print(f"Debug: Processing {len(df)} results")
+        df["scaled"] = df["total_value"] * args.params.threshold
+        print(f"Debug: Scaled values calculated")
+        return df
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=analyze, postprocess=postprocess)
+
+    assert excinfo.value.code == 0
+    
+    # 標準出力はtarフォーマットとして正常に読み込めるべき
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    csv_buf = tar_result["result_csv"]
+    assert isinstance(csv_buf, BytesIO)
+    csv_buf.seek(0)
+    csv_df = pd.read_csv(csv_buf)
+    assert list(csv_df["scaled"]) == [20, 30]
+    
+    # print文の出力は標準エラー出力に出ているべき
+    captured = capsys.readouterr()
+    assert "Debug: Starting postprocess" in captured.err
+    assert "Debug: Processing 2 results" in captured.err
+    assert "Debug: Scaled values calculated" in captured.err

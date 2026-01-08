@@ -1,7 +1,9 @@
+import io
 import sys
 import traceback
+from contextlib import contextmanager
 from enum import Enum
-from typing import IO, NoReturn, Optional
+from typing import IO, Iterator, NoReturn, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,8 +12,61 @@ from analysisrun.helper import cowsay
 from analysisrun.interactive import VirtualFile
 from analysisrun.tar import create_tar_from_dict
 
-# TODO: 標準出力に意味を持たせることになるので、解析処理の中での標準出力への出力が標準エラー出力に向かうように細工しなければならない
-# see: https://stackoverflow.com/questions/8391411/how-to-block-calls-to-print/67055472
+
+@contextmanager
+def redirect_stdout_to_stderr(stderr: IO[bytes]) -> Iterator[None]:
+    """
+    標準出力を標準エラー出力にリダイレクトするコンテキストマネージャ。
+    
+    解析処理中に print() などで標準出力に出力されると、
+    tarフォーマットの出力が破損するため、標準出力を標準エラー出力に
+    リダイレクトすることで、構造化されたデータを安全に出力できるようにする。
+    
+    Parameters
+    ----------
+    stderr
+        標準エラー出力ストリーム（バイナリモード）
+    
+    Examples
+    --------
+    >>> with redirect_stdout_to_stderr(sys.stderr.buffer):
+    ...     print("This goes to stderr")
+    ...     # Now safe to write structured data to stdout
+    
+    Notes
+    -----
+    このコンテキストマネージャはスレッドセーフではない。
+    sys.stdoutの変更はプロセス全体に影響するため、マルチスレッド環境では
+    複数のスレッドが同時にsys.stdoutを変更しようとすると競合状態が発生する可能性がある。
+    このコンテキストマネージャはシングルスレッド環境での使用を想定している。
+    """
+    original_stdout = sys.stdout
+    stderr_text_wrapper = None
+    try:
+        # stderr is IO[bytes], but sys.stdout needs a text stream
+        # Wrap it with TextIOWrapper to make it compatible
+        # Set closefd=False to prevent closing the underlying buffer
+        stderr_text_wrapper = io.TextIOWrapper(
+            stderr, encoding="utf-8", line_buffering=True, write_through=True
+        )
+        # Prevent the wrapper from closing the underlying buffer
+        stderr_text_wrapper._CHUNK_SIZE = 1  # Force immediate writes
+        sys.stdout = stderr_text_wrapper
+        yield
+    finally:
+        # Flush before restoring to ensure all output is written
+        if stderr_text_wrapper and hasattr(stderr_text_wrapper, "flush"):
+            try:
+                stderr_text_wrapper.flush()
+            except (ValueError, OSError):
+                pass  # Ignore errors if already closed
+        # Detach the wrapper without closing the underlying buffer
+        if stderr_text_wrapper:
+            try:
+                stderr_text_wrapper.detach()
+            except (ValueError, OSError):
+                pass  # Ignore errors if already detached
+        sys.stdout = original_stdout
 
 
 class ExitCodes(Enum):

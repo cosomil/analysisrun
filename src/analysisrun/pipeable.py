@@ -33,6 +33,7 @@ from analysisrun.pipeable_io import (
     ExitCodes,
     PostprocessInputModel,
     exit_with_error,
+    redirect_stdout_to_stderr,
 )
 from analysisrun.scanner import Fields, Lanes
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
@@ -353,7 +354,8 @@ class AnalysisContext[
                 parsed.data_name,
                 field_numbers,
             )
-            series = analyze(AnalyzeArgs(parsed.params, lanes, output))
+            with redirect_stdout_to_stderr(stderr):
+                series = analyze(AnalyzeArgs(parsed.params, lanes, output))
             _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
         except Exception as exc:
             exit_with_error(
@@ -383,11 +385,12 @@ class AnalysisContext[
         analysis_results = pd.read_pickle(parsed.analysis_results.unwrap())
 
         try:
-            result_df = (
-                postprocess(PostprocessArgs(parsed.params, analysis_results))
-                if postprocess
-                else analysis_results
-            )
+            with redirect_stdout_to_stderr(stderr):
+                result_df = (
+                    postprocess(PostprocessArgs(parsed.params, analysis_results))
+                    if postprocess
+                    else analysis_results
+                )
             if result_df is None:
                 result_df = analysis_results
         except Exception as exc:
