@@ -64,20 +64,26 @@ def exit_with_error(
         発生した例外オブジェクト
     """
 
-    if exception is not None:
-        print(exception, file=sys.stderr)
+    interactivity = get_interactivity()
+
+    # Jupyter notebook環境ではsys.exit()の使用を避けるため、例外をraiseして処理を中断させることとする。
+    # その際に例外情報が出力されるので、ここでは例外情報の出力を行わないこととする。
+    if exception is not None and interactivity != "notebook":
         details = traceback.format_exception(exception)
         _print("".join(details), stderr)
         stderr.flush()
 
-    interactivity = get_interactivity()
     if interactivity is None:
         tar_data = create_tar_from_dict(ErrorResult(error=message).model_dump())
         _print(tar_data.getvalue(), stdout)
     else:
         _print(cowsay(message), stdout)
     stdout.flush()
-    sys.exit(code.value)
+
+    if interactivity == "notebook":
+        raise exception or RuntimeError(message)
+    else:
+        sys.exit(code.value)
 
 
 class AnalysisInputModel[

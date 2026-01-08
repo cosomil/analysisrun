@@ -96,13 +96,6 @@ class _ImageAnalysisResultSpec:
     description: str
     cleansing: tuple[CleansingFunc, ...] = field(default_factory=tuple)
 
-    def __post_init__(self) -> None:
-        if not self.cleansing:
-            raise ValueError("cleansing must contain at least one callable")
-        # tupleへ正規化（リストなどを許容）
-        if not isinstance(self.cleansing, tuple):
-            self.cleansing = tuple(self.cleansing)  # type: ignore
-
 
 def image_analysis_result_spec(
     description: str, cleansing: CleansingFunc | tuple[CleansingFunc, ...]
@@ -307,7 +300,6 @@ class AnalysisContext[
         :param postprocess: 後処理の実装（任意）。全レーンの解析結果をもとにさらに判定を加えたい場合に使用する。
         :return: 解析結果を格納したDataFrame。
         :raises SystemExit: 成功/失敗を問わず、分散環境で実行される場合にスローされる。
-        :raises RuntimeError: ローカル実行でエラー発生時にスローされる。
         """
         stdout = self.state.stdout
         stderr = self.state.stderr
@@ -491,7 +483,7 @@ class AnalysisContext[
                 )
 
             tar_result = read_tar_as_dict(BytesIO(proc.stdout))
-            if isinstance(tar_result, dict) and "error" in tar_result:
+            if "error" in tar_result:
                 raise RuntimeError(
                     f"{data_name}の解析プロセスでエラーが発生しました: {tar_result['error']}"
                 )
@@ -503,7 +495,7 @@ class AnalysisContext[
             _ensure_result_annotations(series, data_name, sample_name)
 
             images = _extract_images_from_tar_dict(tar_result)
-            _save_images_to_dir(images, output_dir, data_name)
+            _save_images_to_dir(images, output_dir)
             return series
 
         with ThreadPoolExecutor() as executor:
@@ -546,10 +538,19 @@ def read_context[
     interactivity = get_interactivity()
     method = os.getenv("ANALYSISRUN_METHOD")
 
-    specs = _get_image_analysis_specs(image_analysis_results)
-    image_analysis_results_input_model = create_image_analysis_results_input_model(
-        image_analysis_results
-    )
+    try:
+        specs = _get_image_analysis_specs(image_analysis_results)
+        image_analysis_results_input_model = create_image_analysis_results_input_model(
+            image_analysis_results
+        )
+    except Exception as exc:
+        exit_with_error(
+            ExitCodes.INVALID_USAGE,
+            "ImageAnalysisResultsの定義が不正です。各フィールドにimage_analysis_result_spec(...)を設定してください。",
+            _stdout,
+            _stderr,
+            exc,
+        )
     LocalInputModel = InputModel[params, image_analysis_results_input_model]
     AnalysisInput = AnalysisInputModel[params, image_analysis_results_input_model]
     PostprocessInput = PostprocessInputModel[params]
@@ -609,9 +610,22 @@ def read_context[
             parsed_input=parsed,
         )
     else:
+        if interactivity is None:
+            exit_with_error(
+                ExitCodes.INVALID_USAGE,
+                "ANALYSISRUN_METHOD環境変数に実行モードが指定されていません。",
+                _stdout,
+                _stderr,
+            )
+
         mode = "sequential" if interactivity == "notebook" else "parallel-entrypoint"
         if mode == "sequential" and manual_input is None:
-            raise RuntimeError("Jupyter notebook環境ではmanual_inputの指定が必須です。")
+            exit_with_error(
+                ExitCodes.INVALID_USAGE,
+                "Jupyter notebook環境ではmanual_inputの指定が必須です。",
+                _stdout,
+                _stderr,
+            )
 
         if manual_input is not None:
             try:
@@ -624,12 +638,14 @@ def read_context[
                     params=manual_input.params,
                 )
             except ValidationError as exc:
-                raise RuntimeError("manual_inputの形式が正しくありません。") from exc
-        else:
-            if interactivity is None:
-                raise RuntimeError(
-                    "manual_inputを指定するか、対話的に入力してください。"
+                exit_with_error(
+                    ExitCodes.INVALID_USAGE,
+                    "manual_inputの形式が正しくありません。",
+                    _stdout,
+                    _stderr,
+                    exc,
                 )
+        else:
             local_input = scan_model_input(LocalInputModel)
 
         params_value = local_input.params
@@ -655,7 +671,12 @@ def read_context[
             ).items()
         ]
         if not sample_pairs:
-            raise ValueError("sample_names CSVが空です。")
+            exit_with_error(
+                ExitCodes.INVALID_USAGE,
+                "サンプル名CSVファイルが空です。",
+                _stdout,
+                _stderr,
+            )
 
         if mode == "sequential":
             assert cleansed_data is not None
@@ -670,8 +691,11 @@ def read_context[
             assert raw_data is not None and output_dir_path is not None
             entrypoint = get_entrypoint()
             if entrypoint is None:
-                raise RuntimeError(
-                    "並列実行にはエントリポイントのスクリプトが必要です。"
+                exit_with_error(
+                    ExitCodes.INVALID_USAGE,
+                    "エントリーポイントとなるスクリプトのパス取得に失敗したため、並列実行させることができません。",
+                    _stdout,
+                    _stderr,
                 )
             ctx_state = _ParallelState(
                 stdout=_stdout,
@@ -851,9 +875,7 @@ def _extract_images_from_tar_dict(tar_dict: dict[str, Any]) -> dict[str, BytesIO
     return {}
 
 
-def _save_images_to_dir(
-    images: dict[str, BytesIO], output_dir: Path, data_name: str
-) -> None:
+def _save_images_to_dir(images: dict[str, BytesIO], output_dir: Path) -> None:
     for name, buf in images.items():
         buf.seek(0)
         path = output_dir / name
