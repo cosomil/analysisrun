@@ -153,7 +153,10 @@ def test_run_analysis_only_outputs_tar(monkeypatch):
 
 def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
     """
-    解析処理中にprint文があっても標準出力が破損しないことを確認する
+    解析処理中にprint文があっても標準出力が破損しないことを確認する。
+    
+    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
+    print文が標準エラー出力に向かうことを確認する。
     """
     monkeypatch.setenv("ANALYSISRUN_METHOD", "analyze")
     stdout_buf = BytesIO()
@@ -265,7 +268,10 @@ def test_run_postprocess_only_outputs_tar(monkeypatch):
 
 def test_run_postprocess_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
     """
-    後処理中にprint文があっても標準出力が破損しないことを確認する
+    後処理中にprint文があっても標準出力が破損しないことを確認する。
+    
+    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
+    print文が標準エラー出力に向かうことを確認する。
     """
     monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
     stdout_buf = BytesIO()

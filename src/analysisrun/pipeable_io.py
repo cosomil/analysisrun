@@ -20,6 +20,17 @@ def redirect_stdout_to_stderr() -> Iterator[None]:
     解析処理中に print() などで標準出力に出力されると、
     tarフォーマットの出力が破損するため、標準出力を標準エラー出力に
     リダイレクトすることで、構造化されたデータを安全に出力できるようにする。
+    
+    Examples
+    --------
+    >>> with redirect_stdout_to_stderr():
+    ...     print("This goes to stderr")
+    ...     # Now safe to write structured data to stdout
+    
+    Notes
+    -----
+    このコンテキストマネージャはスレッドセーフではない。
+    sys.stdoutの変更はプロセス全体に影響するため、マルチスレッド環境では注意が必要。
     """
     original_stdout = sys.stdout
     try:
