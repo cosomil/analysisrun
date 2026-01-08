@@ -354,7 +354,7 @@ class AnalysisContext[
                 parsed.data_name,
                 field_numbers,
             )
-            with redirect_stdout_to_stderr():
+            with redirect_stdout_to_stderr(stderr):
                 series = analyze(AnalyzeArgs(parsed.params, lanes, output))
             _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
         except Exception as exc:
@@ -385,7 +385,7 @@ class AnalysisContext[
         analysis_results = pd.read_pickle(parsed.analysis_results.unwrap())
 
         try:
-            with redirect_stdout_to_stderr():
+            with redirect_stdout_to_stderr(stderr):
                 result_df = (
                     postprocess(PostprocessArgs(parsed.params, analysis_results))
                     if postprocess

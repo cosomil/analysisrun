@@ -1,3 +1,4 @@
+import io
 import sys
 import traceback
 from contextlib import contextmanager
@@ -13,7 +14,7 @@ from analysisrun.tar import create_tar_from_dict
 
 
 @contextmanager
-def redirect_stdout_to_stderr() -> Iterator[None]:
+def redirect_stdout_to_stderr(stderr: IO[bytes]) -> Iterator[None]:
     """
     標準出力を標準エラー出力にリダイレクトするコンテキストマネージャ。
     
@@ -21,9 +22,14 @@ def redirect_stdout_to_stderr() -> Iterator[None]:
     tarフォーマットの出力が破損するため、標準出力を標準エラー出力に
     リダイレクトすることで、構造化されたデータを安全に出力できるようにする。
     
+    Parameters
+    ----------
+    stderr
+        標準エラー出力ストリーム（バイナリモード）
+    
     Examples
     --------
-    >>> with redirect_stdout_to_stderr():
+    >>> with redirect_stdout_to_stderr(sys.stderr.buffer):
     ...     print("This goes to stderr")
     ...     # Now safe to write structured data to stdout
     
@@ -35,10 +41,31 @@ def redirect_stdout_to_stderr() -> Iterator[None]:
     このコンテキストマネージャはシングルスレッド環境での使用を想定している。
     """
     original_stdout = sys.stdout
+    stderr_text_wrapper = None
     try:
-        sys.stdout = sys.stderr
+        # stderr is IO[bytes], but sys.stdout needs a text stream
+        # Wrap it with TextIOWrapper to make it compatible
+        # Set closefd=False to prevent closing the underlying buffer
+        stderr_text_wrapper = io.TextIOWrapper(
+            stderr, encoding="utf-8", line_buffering=True, write_through=True
+        )
+        # Prevent the wrapper from closing the underlying buffer
+        stderr_text_wrapper._CHUNK_SIZE = 1  # Force immediate writes
+        sys.stdout = stderr_text_wrapper
         yield
     finally:
+        # Flush before restoring to ensure all output is written
+        if stderr_text_wrapper and hasattr(stderr_text_wrapper, "flush"):
+            try:
+                stderr_text_wrapper.flush()
+            except (ValueError, OSError):
+                pass  # Ignore errors if already closed
+        # Detach the wrapper without closing the underlying buffer
+        if stderr_text_wrapper:
+            try:
+                stderr_text_wrapper.detach()
+            except (ValueError, OSError):
+                pass  # Ignore errors if already detached
         sys.stdout = original_stdout
 
 
