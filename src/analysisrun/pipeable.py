@@ -346,7 +346,8 @@ class AnalysisContext[
         output = _TarCollectingOutput()
         try:
             cleansed_data = _load_and_cleanse_image_results(
-                parsed.image_analysis_results, specs, data_format="pickle"
+                parsed.image_analysis_results,
+                specs,
             )
             lanes = _build_fields_namedtuple(
                 self.image_analysis_results,
@@ -382,7 +383,7 @@ class AnalysisContext[
         assert isinstance(self.state, _PostprocessState)
         state = self.state
         parsed = state.parsed_input
-        analysis_results = pd.read_pickle(parsed.analysis_results.unwrap())
+        analysis_results = _deserialize_dataframe(parsed.analysis_results.unwrap())
 
         try:
             with redirect_stdout_to_stderr(stderr):
@@ -494,7 +495,7 @@ class AnalysisContext[
             series_buf = tar_result.get("analysis_result")
             if not isinstance(series_buf, BytesIO):
                 raise RuntimeError(f"{data_name}の解析結果の形式が不正です。")
-            series = pd.read_pickle(series_buf)
+            series = _deserialize_series(series_buf)
             _ensure_result_annotations(series, data_name, sample_name)
 
             images = _extract_images_from_tar_dict(tar_result)
@@ -658,7 +659,7 @@ def read_context[
         output_impl = _FileOutput(output_dir_path)
 
         raw_data = _load_image_results_raw(
-            local_input.image_analysis_results, data_format="csv"
+            local_input.image_analysis_results,
         )
         if mode == "sequential":
             cleansed_data = {
@@ -666,7 +667,7 @@ def read_context[
                 for name, df in raw_data.items()
             }
         sample_pairs = [
-            (str(data), str(sample))
+            (data, sample)
             for data, sample in read_dict(
                 local_input.sample_names.unwrap(),
                 key="data",
@@ -752,7 +753,7 @@ class _NullOutput(Output):
 
 
 def _load_dataframe_from_virtual_file(
-    vfile: VirtualFile, *, data_format: Literal["pickle", "csv"]
+    vfile: VirtualFile,
 ) -> pd.DataFrame:
     """
     VirtualFileからDataFrameを読み込む。
@@ -760,15 +761,11 @@ def _load_dataframe_from_virtual_file(
     data_formatで指定された形式でのみ読み込みを試みる。
     """
 
-    if data_format == "pickle":
-        return pd.read_pickle(vfile.unwrap())
-    if data_format == "csv":
-        return pd.read_csv(vfile.unwrap())
+    return _deserialize_dataframe(vfile.unwrap())
 
 
 def _load_image_results_raw(
     image_analysis_results_model: BaseModel,
-    data_format: Literal["pickle", "csv"],
 ) -> dict[str, pd.DataFrame]:
     """
     ImageAnalysisResultsInputから各データをDataFrameとして読み込む。
@@ -778,7 +775,7 @@ def _load_image_results_raw(
     raw: dict[str, pd.DataFrame] = {}
     for name in image_analysis_results_model.model_fields:
         vfile = getattr(image_analysis_results_model, name)
-        raw[name] = _load_dataframe_from_virtual_file(vfile, data_format=data_format)
+        raw[name] = _load_dataframe_from_virtual_file(vfile)
     return raw
 
 
@@ -798,12 +795,10 @@ def _apply_cleansing_pipeline(
 def _load_and_cleanse_image_results(
     image_analysis_results_model: BaseModel,
     specs: dict[str, _ImageAnalysisResultSpec],
-    *,
-    data_format: Literal["pickle", "csv"],
 ) -> dict[str, CleansedData]:
     cleansed_data: dict[str, CleansedData] = {}
     raw_data = _load_image_results_raw(
-        image_analysis_results_model, data_format=data_format
+        image_analysis_results_model,
     )
     for name, spec in specs.items():
         df = raw_data[name]
@@ -838,17 +833,39 @@ def _ensure_result_annotations(series: pd.Series, data_name: str, sample_name: s
 
 
 def _serialize_series(series: pd.Series) -> BytesIO:
-    buf = BytesIO()
-    series.to_pickle(buf)
-    buf.seek(0)
-    return buf
+    # CSVはDataFrame向けのため、1行DataFrameとして保存する
+    df = series.to_frame().T
+    return _serialize_dataframe(df)
 
 
 def _serialize_dataframe(df: pd.DataFrame) -> BytesIO:
     buf = BytesIO()
-    df.to_pickle(buf)
+    df.to_csv(buf, index=False)
     buf.seek(0)
     return buf
+
+
+def _deserialize_dataframe(value: Any) -> pd.DataFrame:
+    """BytesIO/PathからDataFrameを復元する（CSV専用）。"""
+
+    if isinstance(value, BytesIO):
+        value.seek(0)
+    return pd.read_csv(value, dtype=_CSV_DTYPE)
+
+
+def _deserialize_series(buf: BytesIO) -> pd.Series:
+    df = _deserialize_dataframe(buf)
+    if df.shape[0] != 1:
+        raise RuntimeError("解析結果の行数が不正です。")
+    return df.iloc[0]
+
+
+_CSV_DTYPE: dict[str, type] = {
+    "Entity": str,
+    "Filename": str,
+    "data_name": str,
+    "sample_name": str,
+}
 
 
 def _maybe_load_json(value: Any) -> Any:

@@ -17,22 +17,22 @@ from analysisrun.tar import create_tar_from_dict
 def redirect_stdout_to_stderr(stderr: IO[bytes]) -> Iterator[None]:
     """
     標準出力を標準エラー出力にリダイレクトするコンテキストマネージャ。
-    
+
     解析処理中に print() などで標準出力に出力されると、
     tarフォーマットの出力が破損するため、標準出力を標準エラー出力に
     リダイレクトすることで、構造化されたデータを安全に出力できるようにする。
-    
+
     Parameters
     ----------
     stderr
         標準エラー出力ストリーム（バイナリモード）
-    
+
     Examples
     --------
     >>> with redirect_stdout_to_stderr(sys.stderr.buffer):
     ...     print("This goes to stderr")
     ...     # Now safe to write structured data to stdout
-    
+
     Notes
     -----
     このコンテキストマネージャはスレッドセーフではない。
@@ -50,7 +50,7 @@ def redirect_stdout_to_stderr(stderr: IO[bytes]) -> Iterator[None]:
             stderr, encoding="utf-8", line_buffering=True, write_through=True
         )
         # Prevent the wrapper from closing the underlying buffer
-        stderr_text_wrapper._CHUNK_SIZE = 1  # Force immediate writes
+        stderr_text_wrapper._CHUNK_SIZE = 1  # Force immediate writes # type: ignore
         sys.stdout = stderr_text_wrapper
         yield
     finally:

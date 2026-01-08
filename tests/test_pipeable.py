@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from io import BytesIO
 from pathlib import Path
 from typing import NamedTuple
@@ -41,10 +42,10 @@ class ImageResults(NamedTuple):
     )
 
 
-def _load_pickled_df(path: Path) -> BytesIO:
+def _load_csv_df(path: Path) -> BytesIO:
     df = pd.read_csv(path)
     buf = BytesIO()
-    df.to_pickle(buf)
+    df.to_csv(buf, index=False)
     buf.seek(0)
     return buf
 
@@ -61,16 +62,15 @@ def test_redirect_stdout_to_stderr():
     """
     redirect_stdout_to_stderr関数が正しくstderrパラメータを使用することを確認する。
     """
-    import sys
-    
+
     # stderrとしてBytesIOを用意
     stderr_buf = BytesIO()
-    
+
     # print文の出力先を確認
     with redirect_stdout_to_stderr(stderr_buf):
         print("Test message")
         sys.stdout.flush()
-    
+
     # stderrに出力されていることを確認
     stderr_buf.seek(0)
     output = stderr_buf.read().decode("utf-8")
@@ -130,7 +130,7 @@ def test_run_analysis_only_outputs_tar(monkeypatch):
             "data_name": "0000",
             "sample_name": "SampleA",
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_pickled_df(
+            "image_analysis_results/activity_spots": _load_csv_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -158,7 +158,8 @@ def test_run_analysis_only_outputs_tar(monkeypatch):
 
     series_buf = tar_result["analysis_result"]
     assert isinstance(series_buf, BytesIO)
-    series = pd.read_pickle(series_buf)
+    df = pd.read_csv(series_buf, dtype={"data_name": str, "sample_name": str})
+    series = df.iloc[0]
     filtered = pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV)
     filtered = filtered[filtered["Entity"] == "Activity Spots"]
     filtered = filtered[filtered["Filename"].str.contains("0000")]
@@ -175,7 +176,7 @@ def test_run_analysis_only_outputs_tar(monkeypatch):
 def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
     """
     解析処理中にprint文があっても標準出力が破損しないことを確認する。
-    
+
     print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
     print文が標準エラー出力に向かうことを確認する。
     """
@@ -187,7 +188,7 @@ def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, c
             "data_name": "0000",
             "sample_name": "SampleA",
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_pickled_df(
+            "image_analysis_results/activity_spots": _load_csv_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -213,20 +214,21 @@ def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, c
         ctx.run_analysis(analyze=analyze)
 
     assert excinfo.value.code == 0
-    
+
     # 標準出力はtarフォーマットとして正常に読み込めるべき
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
 
     series_buf = tar_result["analysis_result"]
     assert isinstance(series_buf, BytesIO)
-    series = pd.read_pickle(series_buf)
-    
+    df = pd.read_csv(series_buf, dtype={"data_name": str, "sample_name": str})
+    series = df.iloc[0]
+
     # 結果は正しく取得できるべき
     filtered = pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV)
     filtered = filtered[filtered["Entity"] == "Activity Spots"]
     filtered = filtered[filtered["Filename"].str.contains("0000")]
     assert series["total_value"] == int(filtered["Value"].sum())
-    
+
     # print文の出力は標準エラー出力に出ているべき
     captured = capsys.readouterr()
     assert "Debug: Starting analysis" in captured.err
@@ -245,7 +247,7 @@ def test_run_postprocess_only_outputs_tar(monkeypatch):
         ]
     )
     buf = BytesIO()
-    analysis_results.to_pickle(buf)
+    analysis_results.to_csv(buf, index=False)
     buf.seek(0)
 
     tar_buf = create_tar_from_dict(
@@ -287,10 +289,12 @@ def test_run_postprocess_only_outputs_tar(monkeypatch):
     assert first["scaled"] == 20
 
 
-def test_run_postprocess_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
+def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
+    monkeypatch, capsys
+):
     """
     後処理中にprint文があっても標準出力が破損しないことを確認する。
-    
+
     print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
     print文が標準エラー出力に向かうことを確認する。
     """
@@ -304,7 +308,7 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(monkeypatch
         ]
     )
     buf = BytesIO()
-    analysis_results.to_pickle(buf)
+    analysis_results.to_csv(buf, index=False)
     buf.seek(0)
 
     tar_buf = create_tar_from_dict(
@@ -329,14 +333,14 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(monkeypatch
         df = args.analysis_results.copy()
         print(f"Debug: Processing {len(df)} results")
         df["scaled"] = df["total_value"] * args.params.threshold
-        print(f"Debug: Scaled values calculated")
+        print("Debug: Scaled values calculated")
         return df
 
     with pytest.raises(SystemExit) as excinfo:
         ctx.run_analysis(analyze=analyze, postprocess=postprocess)
 
     assert excinfo.value.code == 0
-    
+
     # 標準出力はtarフォーマットとして正常に読み込めるべき
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
     csv_buf = tar_result["result_csv"]
@@ -344,7 +348,7 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(monkeypatch
     csv_buf.seek(0)
     csv_df = pd.read_csv(csv_buf)
     assert list(csv_df["scaled"]) == [20, 30]
-    
+
     # print文の出力は標準エラー出力に出ているべき
     captured = capsys.readouterr()
     assert "Debug: Starting postprocess" in captured.err

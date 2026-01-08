@@ -194,6 +194,6 @@ ctx = ar.read_context(
 print(ctx.mode)
 results = ctx.run_analysis(analyze, postprocess)
 
-results.to_csv(output_dir / "result.csv")
+results.to_csv(output_dir / "result.csv", index=False)
 
 # FIXME: sequentialとparallelで画像の出力先が違う
