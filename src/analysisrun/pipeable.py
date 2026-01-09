@@ -383,7 +383,12 @@ class AnalysisContext[
         assert isinstance(self.state, _PostprocessState)
         state = self.state
         parsed = state.parsed_input
-        analysis_results = _deserialize_dataframe(parsed.analysis_results.unwrap())
+
+        analyisis_results_input = parsed.analysis_results.unwrap()
+        assert isinstance(analyisis_results_input, BytesIO)
+        analysis_results = _deserialize_dataframe_with_leading_zeroes(
+            analyisis_results_input
+        )
 
         try:
             with redirect_stdout_to_stderr(stderr):
@@ -752,18 +757,6 @@ class _NullOutput(Output):
         plt.close(fig)
 
 
-def _load_dataframe_from_virtual_file(
-    vfile: VirtualFile,
-) -> pd.DataFrame:
-    """
-    VirtualFileからDataFrameを読み込む。
-
-    data_formatで指定された形式でのみ読み込みを試みる。
-    """
-
-    return _deserialize_dataframe(vfile.unwrap())
-
-
 def _load_image_results_raw(
     image_analysis_results_model: BaseModel,
 ) -> dict[str, pd.DataFrame]:
@@ -775,7 +768,7 @@ def _load_image_results_raw(
     raw: dict[str, pd.DataFrame] = {}
     for name in image_analysis_results_model.model_fields:
         vfile = getattr(image_analysis_results_model, name)
-        raw[name] = _load_dataframe_from_virtual_file(vfile)
+        raw[name] = _deserialize_dataframe(vfile.unwrap())
     return raw
 
 
@@ -853,8 +846,24 @@ def _deserialize_dataframe(value: Any) -> pd.DataFrame:
     return pd.read_csv(value, dtype=_CSV_DTYPE)
 
 
+def _deserialize_dataframe_with_leading_zeroes(value: BytesIO) -> pd.DataFrame:
+    """BytesIO/PathからDataFrameを復元する（CSV専用）。"""
+
+    # まずはすべて文字列として一度読み込む
+    value.seek(0)
+    initial = pd.read_csv(value, dtype=str)
+
+    str_dtypes = _CSV_DTYPE.copy()
+    for col in initial.columns:
+        if initial[col].str.match(r"^\s*[+-]?0\d+", na=False).any():
+            str_dtypes[col] = str
+
+    value.seek(0)
+    return pd.read_csv(value, dtype=str_dtypes)
+
+
 def _deserialize_series(buf: BytesIO) -> pd.Series:
-    df = _deserialize_dataframe(buf)
+    df = _deserialize_dataframe_with_leading_zeroes(buf)
     if df.shape[0] != 1:
         raise RuntimeError("解析結果の行数が不正です。")
     return df.iloc[0]
