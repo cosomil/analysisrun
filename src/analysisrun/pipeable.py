@@ -915,6 +915,7 @@ def _save_images_to_dir(images: dict[str, BytesIO], output_dir: Path) -> None:
 
 def _build_postprocess_tar_entries(result_df: pd.DataFrame) -> dict[str, BytesIO]:
     csv_buf = BytesIO()
+    result_df = result_df.astype(str)
     result_df.to_csv(csv_buf, index=False)
     csv_buf.seek(0)
 
