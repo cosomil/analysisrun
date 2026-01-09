@@ -18,9 +18,10 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
         構造に矛盾がある場合（例: "foo"と"foo/bar"が両方存在する場合）
     """
 
-    # tar形式として解析（直接ストリーム処理）
+    # tar/tar.gz を自動判定して解析（直接ストリーム処理）
+    # NOTE: r|* はストリーム向けで、圧縮形式（gz など）も自動判定する。
     result = {}
-    with tarfile.open(fileobj=b, mode="r|") as tar:
+    with tarfile.open(fileobj=b, mode="r|*") as tar:
         for member in tar:
             if member.isfile():
                 # ファイルの内容を読み込む
@@ -104,9 +105,9 @@ def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, 
         tar.addfile(tar_info, BytesIO(content))
 
 
-def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
+def create_tar_from_dict(data: dict[str, Any], *, gzip: bool = True) -> BytesIO:
     """
-    辞書からtar形式のデータを作成し、BytesIOとして返す。
+    辞書からtar（既定: tar.gz）形式のデータを作成し、BytesIOとして返す。
     read_tar_as_dictの逆操作。
 
     Parameters
@@ -120,11 +121,12 @@ def create_tar_from_dict(data: dict[str, Any]) -> BytesIO:
     Returns
     -------
     BytesIO
-        tar形式のデータを含むBytesIOオブジェクト
+        tar（またはtar.gz）形式のデータを含むBytesIOオブジェクト
     """
     tar_buffer = BytesIO()
 
-    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+    mode = "w:gz" if gzip else "w"
+    with tarfile.open(fileobj=tar_buffer, mode=mode) as tar:
         _encode_to_tar(tar, None, data)
 
     # 読み取り位置を先頭に戻す

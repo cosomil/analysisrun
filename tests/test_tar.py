@@ -46,3 +46,41 @@ def test_read_tar_as_dict():
     assert v.data.read() == fileData
     assert v.parameters.covariance == 0.1
     assert v.parameters.max_iterations == 100
+
+
+def test_create_tar_from_dict_default_is_gzip_and_readable():
+    payload = {
+        "count": 10,
+        "data": BytesIO(b"abc"),
+    }
+
+    buf = create_tar_from_dict(payload)
+
+    # gzipマジックナンバー (0x1f, 0x8b)
+    head = buf.getvalue()[:2]
+    assert head == b"\x1f\x8b"
+
+    got = read_tar_as_dict(BytesIO(buf.getvalue()))
+    assert got["count"] == "10"
+    data = got["data"]
+    assert isinstance(data, BytesIO)
+    assert data.read() == b"abc"
+
+
+def test_create_tar_from_dict_gzip_false_is_plain_tar_and_readable():
+    payload = {
+        "count": 10,
+        "data": BytesIO(b"abc"),
+    }
+
+    buf = create_tar_from_dict(payload, gzip=False)
+
+    # 非圧縮tarなのでgzipマジックではない
+    head = buf.getvalue()[:2]
+    assert head != b"\x1f\x8b"
+
+    got = read_tar_as_dict(BytesIO(buf.getvalue()))
+    assert got["count"] == "10"
+    data = got["data"]
+    assert isinstance(data, BytesIO)
+    assert data.read() == b"abc"
