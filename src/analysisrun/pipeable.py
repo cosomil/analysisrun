@@ -102,6 +102,10 @@ class _ImageAnalysisResultSpec:
 def image_analysis_result_spec(
     description: str, cleansing: CleansingFunc | tuple[CleansingFunc, ...]
 ) -> Any:
+    """
+    画像解析結果フィールドの仕様を定義する。
+
+    """
     return _ImageAnalysisResultSpec(
         description=description,
         cleansing=cleansing if isinstance(cleansing, tuple) else (cleansing,),
@@ -294,9 +298,12 @@ class AnalysisContext[
         postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]] = None,
     ) -> pd.DataFrame:
         """
-        コンテキストに基づいて数値解析を実行する。
+        read_contextで読み込んだコンテキストに基づいて数値解析を実行する。
 
-        TODO: 各実行モードの動作について、説明を追加したい。
+        - mode="analysis-only": 1レーンの解析だけを行い、結果をまとめたtarデータを標準出力に書き出す。その後exitする。
+        - mode="postprocess-only": 各レーンの解析結果を結合し、後処理を行った結果をtarデータとして標準出力に書き出す。その後exitする。
+        - mode="sequential": multiprocessingを活用できないJupyter notebook環境において、全レーンをシーケンシャルに処理し、DataFrameを返す。
+        - mode="parallel-entrypoint": entrypointを並列起動し、各レーンのanalysis-onlyの結果を集約、後処理を加えてDataFrameを返す。
 
         :param analyze: レーンごとに実行される解析処理の実装。
         :param postprocess: 後処理の実装（任意）。全レーンの解析結果をもとにさらに判定を加えたい場合に使用する。
@@ -320,9 +327,9 @@ class AnalysisContext[
             raise
         except Exception as exc:
             message = (
-                "後処理でエラーが発生しました。入力データやパラメータを確認してください。"
+                "後処理中に不明なエラーが発生しました。開発者に確認してください。"
                 if isinstance(self.state, _PostprocessState)
-                else "解析処理中にエラーが発生しました。入力データやパラメータを確認してください。"
+                else "解析処理中に不明なエラーが発生しました。開発者に確認してください。"
             )
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
@@ -344,6 +351,7 @@ class AnalysisContext[
         specs = state.specs
         field_numbers = state.field_numbers
 
+        # 分散/サブプロセス実行では、画像はファイル保存できないため tar 内に格納して返す（完全な分散実行と同様の挙動）。
         output = _TarCollectingOutput()
         try:
             cleansed_data = _load_and_cleanse_image_results(
@@ -385,11 +393,13 @@ class AnalysisContext[
         state = self.state
         parsed = state.parsed_input
 
+        # postprocess は複数 lane の結果（CSV）を受け取り、まず結合してから任意の後処理を適用する。
         analysis_results_inputs = list_from_dict(parsed.analysis_results)
         analysis_results: list[pd.DataFrame] = []
         for analyisis_results_input in analysis_results_inputs:
             b = analyisis_results_input.unwrap()
             assert isinstance(b, BytesIO)
+            # 先頭ゼロを含む値（例: "0012"）が落ちないように、列ごとに dtype を再推定する。
             analysis_results.append(_deserialize_dataframe_with_leading_zeroes(b))
 
         concatenated_analysis_results = pd.concat(analysis_results, ignore_index=True)
@@ -460,6 +470,7 @@ class AnalysisContext[
         output_dir = state.output_dir
         entrypoint = state.entrypoint
 
+        # サブプロセスへの入力は、標準入力を経由してtarデータで渡される。そのため、paramsはJSONとしてシリアライズする。
         params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -477,6 +488,7 @@ class AnalysisContext[
             data_name, sample_name = args
             tar_buf = _build_tar_buffer(data_name, sample_name)
             env = os.environ.copy()
+            # entrypoint 側は ANALYSISRUN_METHOD を見てanalysis-onlyモードで動作する。
             env["ANALYSISRUN_METHOD"] = "analyze"
             proc = subprocess.run(
                 [sys.executable, str(entrypoint)],
@@ -488,6 +500,7 @@ class AnalysisContext[
             if proc.returncode != 0:
                 err_msg = proc.stderr.decode(errors="ignore")
                 try:
+                    # 子プロセスが `exit_with_error(...)` した場合、標準出力からエラーの内容を読み取ることができる。
                     error_tar = read_tar_as_dict(BytesIO(proc.stdout))
                     if isinstance(error_tar, dict) and "error" in error_tar:
                         err_msg = error_tar["error"]
@@ -551,6 +564,7 @@ def read_context[
     _stdout: IO[bytes] = stdout or sys.stdout.buffer
     _stderr: IO[bytes] = sys.stderr.buffer
     interactivity = get_interactivity()
+    # 分散/サブプロセス実行では、呼び出し側が環境変数で実行フェーズを指定する。
     method = os.getenv("ANALYSISRUN_METHOD")
 
     try:
@@ -570,6 +584,7 @@ def read_context[
     AnalysisInput = AnalysisInputModel[params, image_analysis_results_input_model]
     PostprocessInput = PostprocessInputModel[params]
 
+    # 画像解析結果は 1..12 lane を前提としている（現状は固定）。
     field_numbers = [i + 1 for i in range(12)]
     output_dir_path = Path(output_dir) if output_dir else None
     cleansed_data: dict[str, CleansedData] | None = None
@@ -642,6 +657,7 @@ def read_context[
                 _stderr,
             )
 
+        # 分散実行でないあ場合Pythonオブジェクトとして入力を渡すことができるので、まずそれを優先して検証する。
         if manual_input is not None:
             try:
                 iar_input = image_analysis_results_input_model(
@@ -661,6 +677,7 @@ def read_context[
                     exc,
                 )
         else:
+            # CLI等ではインタラクティブな入力を通じてLocalInputModelを組み立てる。
             local_input = scan_model_input(LocalInputModel)
 
         params_value = local_input.params
@@ -856,7 +873,7 @@ def _deserialize_dataframe(value: Any) -> pd.DataFrame:
 def _deserialize_dataframe_with_leading_zeroes(value: BytesIO) -> pd.DataFrame:
     """BytesIO/PathからDataFrameを復元する（CSV専用）。"""
 
-    # まずはすべて文字列として一度読み込む
+    # まずはすべて文字列として一度読み込み、「leading-zeroが含まれる（文字列として読み込むべきと思われる）列」だけを str に固定する。
     value.seek(0)
     initial = pd.read_csv(value, dtype=str)
 
