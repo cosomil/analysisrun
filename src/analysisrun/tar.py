@@ -3,11 +3,17 @@ from io import BytesIO
 from typing import Any, IO, Optional
 
 
+class FileIO(BytesIO):
+    def __init__(self, headers: dict[str, str], *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.headers = headers
+
+
 def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
     """
     ストリームからtar形式のデータを読み込み、ファイル名をキー、内容を値とする辞書に変換して返す。
 
-    エントリのPAXヘッダー"is_file"がセットされている場合はBytesIOとして、そうでない場合は文字列として扱う。
+    エントリのPAXヘッダー"is_file"がセットされている場合はFileIOとして、そうでない場合は文字列として扱う。
 
     エントリ名に「/」が含まれる場合は、ネストした辞書を構築する。
     例: エントリ "foo/bar" は {"foo": {"bar": value}} のような構造となる。
@@ -32,8 +38,8 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
                     # PAXヘッダーの"is_file"をチェック
                     is_file = member.pax_headers.get("is_file")
                     if is_file:
-                        # PAXヘッダーに"is_file"がある場合はBytesIOとして保存
-                        value = BytesIO(content)
+                        # PAXヘッダーに"is_file"がある場合はFileIOとして保存
+                        value = FileIO(dict(member.pax_headers.items()), content)
                     else:
                         # それ以外の場合は文字列として保存（UTF-8でデコード）
                         value = content.decode("utf-8").strip()
@@ -75,16 +81,20 @@ def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, 
         full_name = f"{prefix}/{name}" if prefix else name
 
         # 値をバイト列に変換
-        is_file = False
-        if isinstance(value, BytesIO):
+        pax_headers: dict | None = None
+        if isinstance(value, FileIO):
+            value.seek(0)
+            content = value.read()
+            pax_headers = value.headers
+        elif isinstance(value, BytesIO):
             # BytesIOの場合はそのまま読み込む
             value.seek(0)  # 読み取り位置を先頭に戻す
             content = value.read()
-            is_file = True
+            pax_headers = {"is_file": "true"}
         elif isinstance(value, bytes):
             # bytesの場合はそのまま使用
             content = value
-            is_file = True
+            pax_headers = {"is_file": "true"}
         elif isinstance(value, dict):
             # ネストした辞書の場合は再帰的に処理
             _encode_to_tar(tar, full_name, value)
@@ -97,9 +107,9 @@ def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, 
         tar_info = tarfile.TarInfo(name=full_name)
         tar_info.size = len(content)
 
-        # BytesIOの場合はPAXヘッダーに"is_file"をセット
-        if is_file:
-            tar_info.pax_headers = {"is_file": "true"}
+        # BytesIOの場合はPAXヘッダーをセット
+        if pax_headers:
+            tar_info.pax_headers = pax_headers
 
         # tarアーカイブに追加
         tar.addfile(tar_info, BytesIO(content))

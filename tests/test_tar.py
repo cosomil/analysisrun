@@ -1,9 +1,10 @@
+import tarfile
 from io import BytesIO
 
 from pydantic import BaseModel
 
-from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 from analysisrun.interactive import VirtualFile
+from analysisrun.tar import FileIO, create_tar_from_dict, read_tar_as_dict
 
 
 def test_read_tar_as_dict():
@@ -84,3 +85,84 @@ def test_create_tar_from_dict_gzip_false_is_plain_tar_and_readable():
     data = got["data"]
     assert isinstance(data, BytesIO)
     assert data.read() == b"abc"
+
+
+def _make_plain_tar_with_one_file(
+    *,
+    name: str,
+    content: bytes,
+    pax_headers: dict[str, str] | None = None,
+) -> BytesIO:
+    buf = BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(content)
+        if pax_headers is not None:
+            info.pax_headers = pax_headers
+        tar.addfile(info, BytesIO(content))
+    buf.seek(0)
+    return buf
+
+
+def test_read_tar_as_dict_returns_fileio_and_preserves_pax_headers_when_is_file_set():
+    buf = _make_plain_tar_with_one_file(
+        name="data.bin",
+        content=b"\x00\x01\x02",
+        pax_headers={
+            "is_file": "true",
+            "x-meta": "hello",
+        },
+    )
+
+    got = read_tar_as_dict(buf)
+    data = got["data.bin"]
+
+    assert isinstance(data, FileIO)
+    assert data.read() == b"\x00\x01\x02"
+    assert data.headers["is_file"] == "true"
+    assert data.headers["x-meta"] == "hello"
+
+
+def test_read_tar_as_dict_without_is_file_decodes_as_string():
+    buf = _make_plain_tar_with_one_file(
+        name="note.txt",
+        content=b"  hello\n",
+        pax_headers={},
+    )
+
+    got = read_tar_as_dict(buf)
+    assert got["note.txt"] == "hello"
+
+
+def test_create_tar_from_dict_roundtrips_fileio_with_arbitrary_pax_headers():
+    src = FileIO({"is_file": "true", "x-foo": "bar"}, b"abc")
+    buf = create_tar_from_dict({"data": src})
+
+    got = read_tar_as_dict(BytesIO(buf.getvalue()))
+    data = got["data"]
+
+    assert isinstance(data, FileIO)
+    assert data.read() == b"abc"
+    assert data.headers["is_file"] == "true"
+    assert data.headers["x-foo"] == "bar"
+
+
+def test_read_tar_as_dict_raises_on_conflicting_paths_file_then_nested():
+    buf = BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        # First: foo is a file
+        foo = tarfile.TarInfo(name="foo")
+        foo.size = 1
+        tar.addfile(foo, BytesIO(b"x"))
+
+        # Then: foo/bar requires foo to be a dict
+        foobar = tarfile.TarInfo(name="foo/bar")
+        foobar.size = 1
+        tar.addfile(foobar, BytesIO(b"y"))
+    buf.seek(0)
+
+    try:
+        read_tar_as_dict(buf)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "requires foo to be a dictionary" in str(e)
