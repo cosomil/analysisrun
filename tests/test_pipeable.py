@@ -4,6 +4,7 @@ import json
 import sys
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import matplotlib
@@ -22,7 +23,6 @@ from analysisrun.pipeable import (
     image_analysis_result_spec,
     read_context,
 )
-from analysisrun.pipeable_io import redirect_stdout_to_stderr
 from analysisrun.scanner import Fields
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 
@@ -57,31 +57,29 @@ def _dump_csv(df: pd.DataFrame) -> BytesIO:
     return buf
 
 
+def _force_interactivity(monkeypatch, value: str | None) -> None:
+    """read_context と exit_with_error の両方で同じ interactivity を返すように固定する。"""
+
+    import analysisrun.pipeable as pipeable
+    import analysisrun.pipeable_io as pipeable_io
+
+    monkeypatch.setattr(pipeable, "get_interactivity", lambda: value)
+    monkeypatch.setattr(pipeable_io, "get_interactivity", lambda: value)
+
+
+def _write_samples_csv(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
+    p = tmp_path / "samples.csv"
+    df = pd.DataFrame(rows, columns=["data", "sample"])
+    df.to_csv(p, index=False)
+    return p
+
+
 def test_create_image_analysis_results_input_model_requires_spec():
     class InvalidImageResults(NamedTuple):
         activity_spots: Fields
 
     with pytest.raises(ValueError):
         create_image_analysis_results_input_model(InvalidImageResults)
-
-
-def test_redirect_stdout_to_stderr():
-    """
-    redirect_stdout_to_stderr関数が正しくstderrパラメータを使用することを確認する。
-    """
-
-    # stderrとしてBytesIOを用意
-    stderr_buf = BytesIO()
-
-    # print文の出力先を確認
-    with redirect_stdout_to_stderr(stderr_buf):
-        print("Test message")
-        sys.stdout.flush()
-
-    # stderrに出力されていることを確認
-    stderr_buf.seek(0)
-    output = stderr_buf.read().decode("utf-8")
-    assert "Test message" in output
 
 
 def test_run_analysis_sequential_with_manual_input(monkeypatch):
@@ -360,3 +358,285 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
     assert "Debug: Starting postprocess" in captured.err
     assert "Debug: Processing 2 results" in captured.err
     assert "Debug: Scaled values calculated" in captured.err
+
+
+def test_run_postprocess_only_preserves_leading_zero_values(monkeypatch):
+    """postprocess-only で leading-zero を含む列が落ちないことを確認する。"""
+
+    monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
+    stdout_buf = BytesIO()
+
+    analysis_results = pd.DataFrame(
+        [
+            {
+                "data_name": "0000",
+                "sample_name": "SampleA",
+                "barcode": "0012",
+                "total_value": 4,
+            },
+            {
+                "data_name": "0001",
+                "sample_name": "SampleB",
+                "barcode": "0100",
+                "total_value": 6,
+            },
+        ]
+    )
+
+    tar_buf = create_tar_from_dict(
+        {
+            "analysis_results": {
+                "0": _dump_csv(analysis_results.iloc[[0]]),
+                "1": _dump_csv(analysis_results.iloc[[1]]),
+            },
+            "params": Params(threshold=5).model_dump_json(),
+        }
+    )
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+
+    assert excinfo.value.code == 0
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+
+    csv_buf = tar_result["result_csv"]
+    assert isinstance(csv_buf, BytesIO)
+    csv_buf.seek(0)
+    csv_df = pd.read_csv(csv_buf, dtype=str)
+    assert list(csv_df["barcode"]) == ["0012", "0100"]
+
+    json_entries = tar_result["result_json"]
+    assert set(json_entries.keys()) == {"0000", "0001"}
+    first = json.loads(json_entries["0000"].getvalue())
+    second = json.loads(json_entries["0001"].getvalue())
+    assert first["barcode"] == "0012"
+    assert second["barcode"] == "0100"
+
+
+def test_read_context_noninteractive_requires_method_outputs_error_tar(monkeypatch):
+    """非対話かつ ANALYSISRUN_METHOD 未指定なら、stdout に error tar を返して終了する。"""
+
+    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
+
+    stdout_buf = BytesIO()
+    with pytest.raises(SystemExit) as excinfo:
+        read_context(Params, ImageResults, stdin=BytesIO(b""), stdout=stdout_buf)
+
+    assert excinfo.value.code == 2
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert "error" in tar_result
+    assert (
+        tar_result["error"]
+        == "ANALYSISRUN_METHOD環境変数に実行モードが指定されていません。"
+    )
+
+
+@pytest.mark.parametrize("method", ["analyze", "postprocess"])
+def test_read_context_invalid_stdin_tar_in_distributed_mode(monkeypatch, method: str):
+    """analyze/postprocess モードで stdin の tar が壊れている場合は invalid usage として扱う。"""
+
+    monkeypatch.setenv("ANALYSISRUN_METHOD", method)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
+
+    stdout_buf = BytesIO()
+    with pytest.raises(SystemExit) as excinfo:
+        read_context(
+            Params,
+            ImageResults,
+            stdin=BytesIO(b"this is not a tar"),
+            stdout=stdout_buf,
+        )
+
+    assert excinfo.value.code == 2
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert "error" in tar_result
+    assert (
+        tar_result["error"]
+        == "入力データの読み込みに失敗しました。入力形式を確認してください。"
+    )
+
+
+def test_read_context_notebook_requires_manual_input(monkeypatch):
+    """notebook 環境では manual_input 指定が必須。"""
+
+    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    _force_interactivity(monkeypatch, "notebook")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        read_context(Params, ImageResults, manual_input=None)
+
+    assert "Jupyter notebook環境ではmanual_inputの指定が必須" in str(excinfo.value)
+
+
+def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
+    monkeypatch, tmp_path: Path
+):
+    """parallel-entrypoint で subprocess を呼び、env 注入と画像保存を行う。"""
+
+    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, "terminal")
+
+    import analysisrun.pipeable as pipeable
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    samples_csv = _write_samples_csv(tmp_path, [("0000", "SampleA")])
+    manual_input = ManualInput(
+        params=Params(threshold=1),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=samples_csv,
+    )
+
+    called = {"count": 0}
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        called["count"] += 1
+        assert cmd == [sys.executable, str(entrypoint)]
+        assert env.get("ANALYSISRUN_METHOD") == "analyze"
+
+        # 入力 tar の基本構造（data_name/sample_name/params）が入っていることだけ確認
+        tar_in = read_tar_as_dict(BytesIO(input))
+        assert tar_in["data_name"] == "0000"
+        assert tar_in["sample_name"] == "SampleA"
+        assert "params" in tar_in
+        assert "image_analysis_results" in tar_in
+
+        series_csv = b"total_value\n1\n"
+        tar_out = create_tar_from_dict(
+            {
+                "analysis_result": BytesIO(series_csv),
+                "images/plot.png": BytesIO(b"fake-image"),
+            }
+        )
+        return SimpleNamespace(returncode=0, stdout=tar_out.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    out_dir = tmp_path / "out"
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+        output_dir=out_dir,
+    )
+
+    df = ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+    assert called["count"] == 1
+    assert list(df["data_name"]) == ["0000"]
+    assert list(df["sample_name"]) == ["SampleA"]
+    assert (out_dir / "plot.png").exists()
+
+
+def test_parallel_entrypoint_prefers_child_error_tar_over_stderr(
+    monkeypatch, tmp_path: Path
+):
+    """子プロセスが error tar を stdout で返す場合、stderr より優先してメッセージに含める。"""
+
+    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, "terminal")
+
+    import analysisrun.pipeable as pipeable
+
+    # run_analysis の最外周で exit_with_error にラップされると SystemExit になってしまうため、
+    # テストでは下位例外をそのまま観測できるように差し替える。
+    def _raise_original(code, message, stdout, stderr, exception=None):
+        raise exception or RuntimeError(message)
+
+    monkeypatch.setattr(pipeable, "exit_with_error", _raise_original)
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    samples_csv = _write_samples_csv(tmp_path, [("0000", "SampleA")])
+    manual_input = ManualInput(
+        params=Params(threshold=1),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=samples_csv,
+    )
+
+    child_error = "child says hi"
+    error_tar = create_tar_from_dict({"error": child_error})
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        return SimpleNamespace(
+            returncode=1,
+            stdout=error_tar.getvalue(),
+            stderr=b"raw stderr should be ignored",
+        )
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+        output_dir=tmp_path / "out",
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+
+    assert child_error in str(excinfo.value)
+
+
+def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
+    monkeypatch, tmp_path: Path
+):
+    """returncode==0 でも tar に error があれば失敗扱い。"""
+
+    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, "terminal")
+
+    import analysisrun.pipeable as pipeable
+
+    def _raise_original(code, message, stdout, stderr, exception=None):
+        raise exception or RuntimeError(message)
+
+    monkeypatch.setattr(pipeable, "exit_with_error", _raise_original)
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    samples_csv = _write_samples_csv(tmp_path, [("0000", "SampleA")])
+    manual_input = ManualInput(
+        params=Params(threshold=1),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=samples_csv,
+    )
+
+    child_error = "error despite rc=0"
+    error_tar = create_tar_from_dict({"error": child_error})
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        return SimpleNamespace(returncode=0, stdout=error_tar.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+        output_dir=tmp_path / "out",
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+
+    assert child_error in str(excinfo.value)
