@@ -1,4 +1,5 @@
 import hashlib
+import os
 from typing import NamedTuple, Optional
 from pathlib import Path
 
@@ -176,7 +177,11 @@ def postprocess(args: ar.PostprocessArgs[BenchParameters]):
 
 
 test_dir = Path(__file__).parent / ".."
-output_dir = test_dir / "testdata" / "results"
+env_output_dir = os.getenv("ANALYSISRUN_OUTPUT_DIR")
+output_dir = (
+    Path(env_output_dir) if env_output_dir else test_dir / "testdata" / "results"
+)
+output_dir.mkdir(parents=True, exist_ok=True)
 
 # 入力の読み取りと、Runnerの決定を行う
 ctx = ar.read_context(
@@ -195,5 +200,3 @@ print(ctx.mode)
 results = ctx.run_analysis(analyze, postprocess)
 
 results.to_csv(output_dir / "result.csv", index=False)
-
-# FIXME: sequentialとparallelで画像の出力先が違う
