@@ -86,6 +86,7 @@ def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, 
             value.seek(0)
             content = value.read()
             pax_headers = value.headers
+            pax_headers["is_file"] = "true"
         elif isinstance(value, BytesIO):
             # BytesIOの場合はそのまま読み込む
             value.seek(0)  # 読み取り位置を先頭に戻す

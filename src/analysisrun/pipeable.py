@@ -37,7 +37,7 @@ from analysisrun.pipeable_io import (
     redirect_stdout_to_stderr,
 )
 from analysisrun.scanner import Fields, Lanes
-from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
+from analysisrun.tar import FileIO, create_tar_from_dict, read_tar_as_dict
 
 
 class Output(Protocol):
@@ -736,7 +736,7 @@ class _TarCollectingOutput(Output):
         self.images: dict[str, BytesIO] = {}
 
     def __call__(self, fig, name: str, image_type: str, **kwargs) -> None:
-        buf = BytesIO()
+        buf = FileIO({"image_type": image_type})
         fig.savefig(buf, **kwargs)
         buf.seek(0)
         self.images[name] = buf
