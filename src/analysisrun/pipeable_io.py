@@ -172,9 +172,13 @@ class PostprocessInputModel[
     `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
     """
 
-    analysis_results: VirtualFile = Field(description="解析結果データセット")
+    analysis_results: dict[str, VirtualFile] = Field(description="解析結果データセット")
     params: Params = Field(description="解析全体に関わるパラメータ")
 
     model_config = {
         "arbitrary_types_allowed": True,
     }
+
+
+def list_from_dict[V](d: dict[str, V]) -> list[V]:
+    return [v for k, v in sorted(d.items(), key=lambda kv: int(kv[0]))]

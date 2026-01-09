@@ -50,6 +50,13 @@ def _load_csv_df(path: Path) -> BytesIO:
     return buf
 
 
+def _dump_csv(df: pd.DataFrame) -> BytesIO:
+    buf = BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return buf
+
+
 def test_create_image_analysis_results_input_model_requires_spec():
     class InvalidImageResults(NamedTuple):
         activity_spots: Fields
@@ -246,13 +253,13 @@ def test_run_postprocess_only_outputs_tar(monkeypatch):
             {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
         ]
     )
-    buf = BytesIO()
-    analysis_results.to_csv(buf, index=False)
-    buf.seek(0)
 
     tar_buf = create_tar_from_dict(
         {
-            "analysis_results": buf,
+            "analysis_results": {
+                "0": _dump_csv(analysis_results.iloc[[0]]),
+                "1": _dump_csv(analysis_results.iloc[[1]]),
+            },
             "params": Params(threshold=5).model_dump_json(),
         }
     )
@@ -307,13 +314,12 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
             {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
         ]
     )
-    buf = BytesIO()
-    analysis_results.to_csv(buf, index=False)
-    buf.seek(0)
-
     tar_buf = create_tar_from_dict(
         {
-            "analysis_results": buf,
+            "analysis_results": {
+                "0": _dump_csv(analysis_results.iloc[[0]]),
+                "1": _dump_csv(pd.DataFrame(analysis_results.iloc[[1]])),
+            },
             "params": Params(threshold=5).model_dump_json(),
         }
     )

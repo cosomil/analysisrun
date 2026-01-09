@@ -33,6 +33,7 @@ from analysisrun.pipeable_io import (
     ExitCodes,
     PostprocessInputModel,
     exit_with_error,
+    list_from_dict,
     redirect_stdout_to_stderr,
 )
 from analysisrun.scanner import Fields, Lanes
@@ -384,21 +385,26 @@ class AnalysisContext[
         state = self.state
         parsed = state.parsed_input
 
-        analyisis_results_input = parsed.analysis_results.unwrap()
-        assert isinstance(analyisis_results_input, BytesIO)
-        analysis_results = _deserialize_dataframe_with_leading_zeroes(
-            analyisis_results_input
-        )
+        analysis_results_inputs = list_from_dict(parsed.analysis_results)
+        analysis_results: list[pd.DataFrame] = []
+        for analyisis_results_input in analysis_results_inputs:
+            b = analyisis_results_input.unwrap()
+            assert isinstance(b, BytesIO)
+            analysis_results.append(_deserialize_dataframe_with_leading_zeroes(b))
+
+        concatenated_analysis_results = pd.concat(analysis_results, ignore_index=True)
 
         try:
             with redirect_stdout_to_stderr(stderr):
                 result_df = (
-                    postprocess(PostprocessArgs(parsed.params, analysis_results))
+                    postprocess(
+                        PostprocessArgs(parsed.params, concatenated_analysis_results)
+                    )
                     if postprocess
-                    else analysis_results
+                    else concatenated_analysis_results
                 )
             if result_df is None:
-                result_df = analysis_results
+                result_df = concatenated_analysis_results
         except Exception as exc:
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
