@@ -765,8 +765,9 @@ def _load_image_results_raw(
 
     クレンジングは行わず、生データを返す。
     """
+
     raw: dict[str, pd.DataFrame] = {}
-    for name in image_analysis_results_model.model_fields:
+    for name in type(image_analysis_results_model).model_fields:
         vfile = getattr(image_analysis_results_model, name)
         raw[name] = _deserialize_dataframe(vfile.unwrap())
     return raw

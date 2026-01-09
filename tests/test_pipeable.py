@@ -286,7 +286,7 @@ def test_run_postprocess_only_outputs_tar(monkeypatch):
     json_entries = tar_result["result_json"]
     assert set(json_entries.keys()) == {"0000", "0001"}
     first = json.loads(json_entries["0000"].getvalue())
-    assert first["scaled"] == 20
+    assert first["scaled"] == "20"  # すべて文字列となる
 
 
 def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
