@@ -488,8 +488,8 @@ class AnalysisContext[
             data_name, sample_name = args
             tar_buf = _build_tar_buffer(data_name, sample_name)
             env = os.environ.copy()
-            # entrypoint 側は ANALYSISRUN_METHOD を見てanalysis-onlyモードで動作する。
-            env["ANALYSISRUN_METHOD"] = "analyze"
+            # entrypoint 側は ANALYSISRUN_MODE を見てanalysis-onlyモードで動作する。
+            env["ANALYSISRUN_MODE"] = "analyze"
             proc = subprocess.run(
                 [sys.executable, str(entrypoint)],
                 input=tar_buf.getvalue(),
@@ -565,7 +565,7 @@ def read_context[
     _stderr: IO[bytes] = sys.stderr.buffer
     interactivity = get_interactivity()
     # 分散/サブプロセス実行では、呼び出し側が環境変数で実行フェーズを指定する。
-    method = os.getenv("ANALYSISRUN_METHOD")
+    mode = os.getenv("ANALYSISRUN_MODE")
 
     try:
         specs = _get_image_analysis_specs(image_analysis_results)
@@ -599,7 +599,7 @@ def read_context[
         | _ParallelState
     )
 
-    if method == "analyze":
+    if mode == "analyze":
         try:
             tar_dict = read_tar_as_dict(_stdin)
             tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
@@ -620,7 +620,7 @@ def read_context[
             specs=specs,
             field_numbers=field_numbers,
         )
-    elif method == "postprocess":
+    elif mode == "postprocess":
         try:
             tar_dict = read_tar_as_dict(_stdin)
             tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
@@ -643,7 +643,7 @@ def read_context[
         if interactivity is None:
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
-                "ANALYSISRUN_METHOD環境変数に実行モードが指定されていません。",
+                "ANALYSISRUN_MODE環境変数に実行モードが指定されていません。",
                 _stdout,
                 _stderr,
             )

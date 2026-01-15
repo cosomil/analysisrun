@@ -10,6 +10,9 @@ from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GOLDEN_DIR = REPO_ROOT / "tests" / "testdata" / "results"
+ORCHESTRATOR_MAIN = REPO_ROOT / "tests" / "testimpl" / "orchestrator" / "main.go"
+IMAGE_ANALYSIS_RESULT = REPO_ROOT / "tests" / "testdata" / "image_analysis_result.csv"
+SAMPLES_CSV = REPO_ROOT / "tests" / "testdata" / "samples.csv"
 
 
 def _list_files(dir_path: Path) -> list[Path]:
@@ -82,17 +85,75 @@ def _run_one(*, mode: str) -> float:
         return elapsed
 
 
+def _build_orchestrator(out_path: Path) -> None:
+    cmd = ["go", "build", "-o", str(out_path), str(ORCHESTRATOR_MAIN)]
+    proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+    if proc.returncode != 0:
+        raise RuntimeError(f"ビルドに失敗しました: {cmd} (exit={proc.returncode})")
+
+
+def _run_distributed(*, run_mode: str, orchestrator_path: Path) -> float:
+    if run_mode not in {"whole", "only"}:
+        raise ValueError(f"unknown run_mode: {run_mode}")
+
+    with tempfile.TemporaryDirectory(prefix=f"analysisrun-bench-distributed-{run_mode}-") as td:
+        out_dir = Path(td)
+
+        env = os.environ.copy()
+        env["SCRIPT_PATH"] = "./tests/testimpl"
+        env["IMAGE_ANALYSIS_RESULT"] = str(IMAGE_ANALYSIS_RESULT)
+        env["SAMPLES"] = str(SAMPLES_CSV)
+        env["PARAMETERS"] = "{}"
+        env["OUTPUT_DIR"] = str(out_dir)
+        env["RUN_MODE"] = run_mode
+
+        t0 = time.perf_counter()
+        proc = subprocess.run([str(orchestrator_path)], cwd=str(REPO_ROOT), env=env)
+        t1 = time.perf_counter()
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"実行に失敗しました: {orchestrator_path} (exit={proc.returncode})"
+            )
+
+        elapsed = t1 - t0
+        print(f"[distributed-{run_mode}] elapsed_sec={elapsed:.6f}")
+        _assert_outputs_match_golden(out_dir)
+        print(f"[distributed-{run_mode}] outputs_ok=true")
+
+        return elapsed
+
+
 def main() -> int:
     if not GOLDEN_DIR.exists():
         print(f"golden dir not found: {GOLDEN_DIR}", file=sys.stderr)
         return 2
 
-    seq = _run_one(mode="sequential")
-    par = _run_one(mode="parallel")
+    seq = 0.0
+    par = 0.0
+    dist_whole = 0.0
+    dist_only = 0.0
+
+    with tempfile.TemporaryDirectory(prefix="analysisrun-orchestrator-") as td:
+        orchestrator_path = Path(td) / "orchestrator"
+        _build_orchestrator(orchestrator_path)
+
+        seq = _run_one(mode="sequential")
+        par = _run_one(mode="parallel")
+        dist_whole = _run_distributed(
+            run_mode="whole", orchestrator_path=orchestrator_path
+        )
+        dist_only = _run_distributed(
+            run_mode="only", orchestrator_path=orchestrator_path
+        )
 
     # 参考情報（要件外の最小出力）
     if par > 0:
         print(f"speedup(sequential/parallel)={seq / par:.3f}x")
+    if dist_whole > 0:
+        print(f"speedup(sequential/distributed-whole)={seq / dist_whole:.3f}x")
+    if dist_only > 0:
+        print(f"speedup(sequential/distributed-only)={seq / dist_only:.3f}x")
 
     return 0
 
