@@ -3,6 +3,7 @@ import os
 from typing import NamedTuple, Optional
 from pathlib import Path
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -11,7 +12,16 @@ from pydantic import BaseModel
 import analysisrun as ar
 from analysisrun.scanner import Fields
 
-plt.rcParams["font.family"] = "Arial"
+matplotlib.use("Agg")
+plt.rcParams.update(
+    {
+        "font.family": "DejaVu Sans",
+        "text.usetex": False,
+        "figure.dpi": 100,
+        "savefig.dpi": 100,
+        "lines.antialiased": False,
+    }
+)
 
 
 def _stable_seed(s: str) -> int:
@@ -142,7 +152,7 @@ def analyze(
     # 凡例が多い時は省略気味に
     if 0 < len(field_ids) <= 12:
         ax1.legend(markerscale=4, fontsize=8, ncol=3, frameon=False)
-    output(fig1, f"{lane_name}_scatter.png", "scatter", bbox_inches="tight")
+    output(fig1, f"{lane_name}_scatter.png", "scatter")  # , bbox_inches="tight")
 
     # 相関ヒートマップ（視野×視野）
     if len(series_by_field) >= 2:
@@ -155,7 +165,7 @@ def analyze(
         ax2.set_xlabel("Field index")
         ax2.set_ylabel("Field index")
         fig2.colorbar(im, ax=ax2, fraction=0.046, pad=0.04)
-        output(fig2, f"{lane_name}_corr.png", "heatmap", bbox_inches="tight")
+        output(fig2, f"{lane_name}_corr.png", "heatmap")  # , bbox_inches="tight")
 
     # 結果サマリ（ベンチ用のメタ情報）
     return pd.Series(

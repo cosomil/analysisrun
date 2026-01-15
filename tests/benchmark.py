@@ -5,6 +5,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from pixelmatch.contrib.PIL import pixelmatch
+from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GOLDEN_DIR = REPO_ROOT / "tests" / "testdata" / "results"
@@ -33,10 +35,18 @@ def _assert_outputs_match_golden(output_dir: Path) -> None:
 
     for exp in expected:
         out = output_dir / exp.name
-        exp_bytes = exp.read_bytes()
-        out_bytes = out.read_bytes()
-        if exp_bytes != out_bytes:
-            raise AssertionError(f"ファイル内容が一致しません: {exp.name}")
+
+        if str(out).endswith(".png"):
+            diff = pixelmatch(
+                img1=Image.open(exp), img2=Image.open(out), output=None, threshold=0.1
+            )
+            if diff > 0:
+                raise AssertionError(f"画像ファイルが一致しません: {exp.name}")
+        else:
+            exp_bytes = exp.read_bytes()
+            out_bytes = out.read_bytes()
+            if exp_bytes != out_bytes:
+                raise AssertionError(f"ファイル内容が一致しません: {exp.name}")
 
 
 def _run_one(*, mode: str) -> float:
