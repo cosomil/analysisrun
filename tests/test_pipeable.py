@@ -84,7 +84,7 @@ def test_create_image_analysis_results_input_model_requires_spec():
 
 def test_run_analysis_sequential_with_manual_input(monkeypatch):
     monkeypatch.setenv("PSEUDO_NBENV", "1")
-    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
 
     manual_input = ManualInput(
         params=Params(threshold=2),
@@ -127,7 +127,7 @@ def test_run_analysis_sequential_with_manual_input(monkeypatch):
 
 
 def test_run_analysis_only_outputs_tar(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_METHOD", "analyze")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
     stdout_buf = BytesIO()
 
     tar_buf = create_tar_from_dict(
@@ -185,7 +185,7 @@ def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, c
     print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
     print文が標準エラー出力に向かうことを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_METHOD", "analyze")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
     stdout_buf = BytesIO()
 
     tar_buf = create_tar_from_dict(
@@ -242,7 +242,7 @@ def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, c
 
 
 def test_run_postprocess_only_outputs_tar(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
     stdout_buf = BytesIO()
 
     analysis_results = pd.DataFrame(
@@ -303,7 +303,7 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
     print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
     print文が標準エラー出力に向かうことを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
     stdout_buf = BytesIO()
 
     analysis_results = pd.DataFrame(
@@ -363,7 +363,7 @@ def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
 def test_run_postprocess_only_preserves_leading_zero_values(monkeypatch):
     """postprocess-only で leading-zero を含む列が落ちないことを確認する。"""
 
-    monkeypatch.setenv("ANALYSISRUN_METHOD", "postprocess")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
     stdout_buf = BytesIO()
 
     analysis_results = pd.DataFrame(
@@ -421,9 +421,9 @@ def test_run_postprocess_only_preserves_leading_zero_values(monkeypatch):
 
 
 def test_read_context_noninteractive_requires_method_outputs_error_tar(monkeypatch):
-    """非対話かつ ANALYSISRUN_METHOD 未指定なら、stdout に error tar を返して終了する。"""
+    """非対話かつ ANALYSISRUN_MODE 未指定なら、stdout に error tar を返して終了する。"""
 
-    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
@@ -436,7 +436,7 @@ def test_read_context_noninteractive_requires_method_outputs_error_tar(monkeypat
     assert "error" in tar_result
     assert (
         tar_result["error"]
-        == "ANALYSISRUN_METHOD環境変数に実行モードが指定されていません。"
+        == "ANALYSISRUN_MODE環境変数に実行モードが指定されていません。"
     )
 
 
@@ -444,7 +444,7 @@ def test_read_context_noninteractive_requires_method_outputs_error_tar(monkeypat
 def test_read_context_invalid_stdin_tar_in_distributed_mode(monkeypatch, method: str):
     """analyze/postprocess モードで stdin の tar が壊れている場合は invalid usage として扱う。"""
 
-    monkeypatch.setenv("ANALYSISRUN_METHOD", method)
+    monkeypatch.setenv("ANALYSISRUN_MODE", method)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
@@ -469,7 +469,7 @@ def test_read_context_invalid_stdin_tar_in_distributed_mode(monkeypatch, method:
 def test_read_context_notebook_requires_manual_input(monkeypatch):
     """notebook 環境では manual_input 指定が必須。"""
 
-    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     _force_interactivity(monkeypatch, "notebook")
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -483,7 +483,7 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
 ):
     """parallel-entrypoint で subprocess を呼び、env 注入と画像保存を行う。"""
 
-    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
@@ -505,7 +505,7 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
     def fake_run(cmd, *, input, stdout, stderr, env):
         called["count"] += 1
         assert cmd == [sys.executable, str(entrypoint)]
-        assert env.get("ANALYSISRUN_METHOD") == "analyze"
+        assert env.get("ANALYSISRUN_MODE") == "analyze"
 
         # 入力 tar の基本構造（data_name/sample_name/params）が入っていることだけ確認
         tar_in = read_tar_as_dict(BytesIO(input))
@@ -545,7 +545,7 @@ def test_parallel_entrypoint_prefers_child_error_tar_over_stderr(
 ):
     """子プロセスが error tar を stdout で返す場合、stderr より優先してメッセージに含める。"""
 
-    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
@@ -599,7 +599,7 @@ def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
 ):
     """returncode==0 でも tar に error があれば失敗扱い。"""
 
-    monkeypatch.delenv("ANALYSISRUN_METHOD", raising=False)
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
