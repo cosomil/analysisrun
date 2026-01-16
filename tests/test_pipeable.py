@@ -551,10 +551,16 @@ def test_parallel_entrypoint_prefers_child_error_tar_over_stderr(
 
     import analysisrun.pipeable as pipeable
 
-    # run_analysis の最外周で exit_with_error にラップされると SystemExit になってしまうため、
-    # テストでは下位例外をそのまま観測できるように差し替える。
+    stderr_buf = BytesIO()
+
+    class _DummyStderr:
+        def __init__(self, buf: BytesIO):
+            self.buffer = buf
+
+    monkeypatch.setattr(pipeable.sys, "stderr", _DummyStderr(stderr_buf))
+
     def _raise_original(code, message, stdout, stderr, exception=None):
-        raise exception or RuntimeError(message)
+        raise RuntimeError(message)
 
     monkeypatch.setattr(pipeable, "exit_with_error", _raise_original)
 
@@ -591,7 +597,10 @@ def test_parallel_entrypoint_prefers_child_error_tar_over_stderr(
     with pytest.raises(RuntimeError) as excinfo:
         ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
 
-    assert child_error in str(excinfo.value)
+    assert "エラーが発生しました" in str(excinfo.value)
+    stderr_text = stderr_buf.getvalue().decode("utf-8")
+    assert child_error in stderr_text
+    assert "raw stderr should be ignored" not in stderr_text
 
 
 def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
@@ -605,8 +614,16 @@ def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
 
     import analysisrun.pipeable as pipeable
 
+    stderr_buf = BytesIO()
+
+    class _DummyStderr:
+        def __init__(self, buf: BytesIO):
+            self.buffer = buf
+
+    monkeypatch.setattr(pipeable.sys, "stderr", _DummyStderr(stderr_buf))
+
     def _raise_original(code, message, stdout, stderr, exception=None):
-        raise exception or RuntimeError(message)
+        raise RuntimeError(message)
 
     monkeypatch.setattr(pipeable, "exit_with_error", _raise_original)
 
@@ -639,4 +656,80 @@ def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
     with pytest.raises(RuntimeError) as excinfo:
         ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
 
-    assert child_error in str(excinfo.value)
+    assert "エラーが発生しました" in str(excinfo.value)
+    stderr_text = stderr_buf.getvalue().decode("utf-8")
+    assert child_error in stderr_text
+
+
+def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
+    monkeypatch, tmp_path: Path
+):
+    """エラー tar でもレーンごとのメッセージを出力し、画像を保存する。"""
+
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, "terminal")
+
+    import analysisrun.pipeable as pipeable
+
+    stderr_buf = BytesIO()
+
+    class _DummyStderr:
+        def __init__(self, buf: BytesIO):
+            self.buffer = buf
+
+    monkeypatch.setattr(pipeable.sys, "stderr", _DummyStderr(stderr_buf))
+
+    def _raise_original(code, message, stdout, stderr, exception=None):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(pipeable, "exit_with_error", _raise_original)
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    samples_csv = _write_samples_csv(
+        tmp_path, [("0000", "SampleA"), ("0001", "SampleB")]
+    )
+    manual_input = ManualInput(
+        params=Params(threshold=1),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=samples_csv,
+    )
+
+    child_error = "child error with image"
+    error_tar = create_tar_from_dict(
+        {
+            "error": child_error,
+            "images/error_plot.png": BytesIO(b"error-image"),
+        }
+    )
+    series_csv = b"total_value\n2\n"
+    ok_tar = create_tar_from_dict({"analysis_result": BytesIO(series_csv)})
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        if tar_in["data_name"] == "0000":
+            return SimpleNamespace(
+                returncode=1, stdout=error_tar.getvalue(), stderr=b""
+            )
+        return SimpleNamespace(returncode=0, stdout=ok_tar.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    out_dir = tmp_path / "out"
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+        output_dir=out_dir,
+    )
+
+    with pytest.raises(RuntimeError):
+        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+
+    stderr_text = stderr_buf.getvalue().decode("utf-8")
+    assert "0000 (SampleA)" in stderr_text
+    assert child_error in stderr_text
+    assert (out_dir / "error_plot.png").exists()

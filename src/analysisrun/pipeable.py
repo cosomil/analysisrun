@@ -484,7 +484,9 @@ class AnalysisContext[
                 payload[f"image_analysis_results/{name}"] = _serialize_dataframe(df)
             return create_tar_from_dict(payload)
 
-        def _run_lane(args: tuple[str, str]) -> pd.Series:
+        def _run_lane(
+            args: tuple[str, str],
+        ) -> tuple[str, str, Optional[pd.Series], Optional[str]]:
             data_name, sample_name = args
             tar_buf = _build_tar_buffer(data_name, sample_name)
             env = os.environ.copy()
@@ -497,37 +499,85 @@ class AnalysisContext[
                 stderr=subprocess.PIPE,
                 env=env,
             )
+            tar_result: dict[str, Any] | None = None
             if proc.returncode != 0:
                 err_msg = proc.stderr.decode(errors="ignore")
+                if not err_msg:
+                    err_msg = "不明なエラーが発生しました。"
                 try:
                     # 子プロセスが `exit_with_error(...)` した場合、標準出力からエラーの内容を読み取ることができる。
                     error_tar = read_tar_as_dict(BytesIO(proc.stdout))
-                    if isinstance(error_tar, dict) and "error" in error_tar:
-                        err_msg = error_tar["error"]
+                    if isinstance(error_tar, dict):
+                        tar_result = error_tar
+                        if "error" in error_tar:
+                            err_msg = error_tar["error"]
                 except Exception:
                     pass
-                raise RuntimeError(
-                    f"{data_name}の解析プロセスでエラーが発生しました: {err_msg}"
+                if tar_result is not None:
+                    images = _extract_images_from_tar_dict(tar_result)
+                    _save_images_to_dir(images, output_dir)
+                return data_name, sample_name, None, err_msg
+
+            try:
+                tar_result = read_tar_as_dict(BytesIO(proc.stdout))
+            except Exception as exc:
+                return (
+                    data_name,
+                    sample_name,
+                    None,
+                    f"{data_name}の解析結果の読み込みに失敗しました: {exc}",
                 )
 
-            tar_result = read_tar_as_dict(BytesIO(proc.stdout))
             if "error" in tar_result:
-                raise RuntimeError(
-                    f"{data_name}の解析プロセスでエラーが発生しました: {tar_result['error']}"
+                images = _extract_images_from_tar_dict(tar_result)
+                _save_images_to_dir(images, output_dir)
+                return (
+                    data_name,
+                    sample_name,
+                    None,
+                    str(tar_result["error"]),
                 )
 
             series_buf = tar_result.get("analysis_result")
             if not isinstance(series_buf, BytesIO):
-                raise RuntimeError(f"{data_name}の解析結果の形式が不正です。")
+                return (
+                    data_name,
+                    sample_name,
+                    None,
+                    f"{data_name}の解析結果の形式が不正です。",
+                )
             series = _deserialize_series(series_buf)
             _ensure_result_annotations(series, data_name, sample_name)
 
             images = _extract_images_from_tar_dict(tar_result)
             _save_images_to_dir(images, output_dir)
-            return series
+            return data_name, sample_name, series, None
 
         with ThreadPoolExecutor() as executor:
-            results = list(executor.map(_run_lane, sample_pairs))
+            lane_results = list(executor.map(_run_lane, sample_pairs))
+
+        errors: list[tuple[str, str, str]] = []
+        results: list[pd.Series] = []
+        for data_name, sample_name, series, err_msg in lane_results:
+            if err_msg:
+                errors.append((data_name, sample_name, err_msg))
+            elif series is not None:
+                results.append(series)
+
+        if errors:
+            for data_name, sample_name, err_msg in errors:
+                state.stderr.write(
+                    f"{data_name} ({sample_name}) の解析でエラーが発生しました: {err_msg}\n".encode(
+                        "utf-8"
+                    )
+                )
+            state.stderr.flush()
+            exit_with_error(
+                ExitCodes.PROCESSING_ERROR,
+                "並列解析でエラーが発生しました。",
+                state.stdout,
+                state.stderr,
+            )
 
         result_df = pd.DataFrame(results)
         if postprocess:
