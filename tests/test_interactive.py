@@ -28,7 +28,7 @@ class Test_VirtualFile:
         # ディレクトリを取得できる
         assert out.target.parent == (Path(__file__).parent / "testdata")
         # ファイルを読み込むことができる
-        assert_readable_as_csv(out.target)
+        assert_readable_as_csv(out.target.unwrap())
 
     def test_from_str(self):
         _in: dict[str, Any] = {
@@ -39,7 +39,7 @@ class Test_VirtualFile:
         # ディレクトリを取得できる
         assert out.target.parent == (Path(__file__).parent / "testdata")
         # ファイルを読み込むことができる
-        assert_readable_as_csv(out.target)
+        assert_readable_as_csv(out.target.unwrap())
 
     def test_from_quoted_str(self):
         _in: dict[str, Any] = {
@@ -50,7 +50,7 @@ class Test_VirtualFile:
         # ディレクトリを取得できる
         assert out.target.parent == (Path(__file__).parent / "testdata")
         # ファイルを読み込むことができる
-        assert_readable_as_csv(out.target)
+        assert_readable_as_csv(out.target.unwrap())
 
     def test_from_BytesIO(self):
         with open(Path(__file__).parent / "testdata" / "samples.csv", "rb") as f:
@@ -62,4 +62,4 @@ class Test_VirtualFile:
         # ディレクトリを取得できる（作業ディレクトリが入る）
         assert out.target.parent == Path(getcwd())
         # ファイルを読み込むことができる
-        assert_readable_as_csv(out.target)
+        assert_readable_as_csv(out.target.unwrap())
