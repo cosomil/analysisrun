@@ -486,7 +486,7 @@ class AnalysisContext[
 
         def _run_lane(
             args: tuple[str, str],
-        ) -> tuple[str, str, Optional[pd.Series], Optional[str]]:
+        ) -> tuple[str, str, Optional[pd.Series], Optional[tuple[str, str]]]:
             data_name, sample_name = args
             tar_buf = _build_tar_buffer(data_name, sample_name)
             env = os.environ.copy()
@@ -501,7 +501,8 @@ class AnalysisContext[
             )
             tar_result: dict[str, Any] | None = None
             if proc.returncode != 0:
-                err_msg = proc.stderr.decode(errors="ignore")
+                err_msg = ""
+                err_out = proc.stderr.decode(errors="ignore")
                 if not err_msg:
                     err_msg = "不明なエラーが発生しました。"
                 try:
@@ -516,7 +517,7 @@ class AnalysisContext[
                 if tar_result is not None:
                     images = _extract_images_from_tar_dict(tar_result)
                     _save_images_to_dir(images, output_dir)
-                return data_name, sample_name, None, err_msg
+                return data_name, sample_name, None, (err_msg, err_out)
 
             try:
                 tar_result = read_tar_as_dict(BytesIO(proc.stdout))
@@ -525,7 +526,7 @@ class AnalysisContext[
                     data_name,
                     sample_name,
                     None,
-                    f"{data_name}の解析結果の読み込みに失敗しました: {exc}",
+                    (f"{data_name}の解析結果の読み込みに失敗しました", str(exc)),
                 )
 
             if "error" in tar_result:
@@ -535,7 +536,7 @@ class AnalysisContext[
                     data_name,
                     sample_name,
                     None,
-                    str(tar_result["error"]),
+                    (str(tar_result["error"]), ""),
                 )
 
             series_buf = tar_result.get("analysis_result")
@@ -544,7 +545,7 @@ class AnalysisContext[
                     data_name,
                     sample_name,
                     None,
-                    f"{data_name}の解析結果の形式が不正です。",
+                    (f"{data_name}の解析結果の形式が不正です。", ""),
                 )
             series = _deserialize_series(series_buf)
             _ensure_result_annotations(series, data_name, sample_name)
@@ -556,25 +557,30 @@ class AnalysisContext[
         with ThreadPoolExecutor() as executor:
             lane_results = list(executor.map(_run_lane, sample_pairs))
 
-        errors: list[tuple[str, str, str]] = []
+        errors: list[tuple[str, str, str, str]] = []
         results: list[pd.Series] = []
         for data_name, sample_name, series, err_msg in lane_results:
             if err_msg:
-                errors.append((data_name, sample_name, err_msg))
+                errors.append((data_name, sample_name, err_msg[0], err_msg[1]))
             elif series is not None:
                 results.append(series)
 
         if errors:
-            for data_name, sample_name, err_msg in errors:
+            lanes = []
+            for data_name, sample_name, err_msg, err_out in errors:
+                header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
+                footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
                 state.stderr.write(
-                    f"{data_name} ({sample_name}) の解析でエラーが発生しました: {err_msg}\n".encode(
-                        "utf-8"
-                    )
+                    "\n".join(
+                        [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
+                    ).encode("utf-8")
                 )
+                lanes.append(f"- {data_name} ({sample_name})")
             state.stderr.flush()
+
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
-                "並列解析でエラーが発生しました。",
+                "\n".join(["解析中にエラーが発生しました。", *lanes]),
                 state.stdout,
                 state.stderr,
             )

@@ -540,69 +540,6 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
     assert (out_dir / "plot.png").exists()
 
 
-def test_parallel_entrypoint_prefers_child_error_tar_over_stderr(
-    monkeypatch, tmp_path: Path
-):
-    """子プロセスが error tar を stdout で返す場合、stderr より優先してメッセージに含める。"""
-
-    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
-    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
-    _force_interactivity(monkeypatch, "terminal")
-
-    import analysisrun.pipeable as pipeable
-
-    stderr_buf = BytesIO()
-
-    class _DummyStderr:
-        def __init__(self, buf: BytesIO):
-            self.buffer = buf
-
-    monkeypatch.setattr(pipeable.sys, "stderr", _DummyStderr(stderr_buf))
-
-    def _raise_original(code, message, stdout, stderr, exception=None):
-        raise RuntimeError(message)
-
-    monkeypatch.setattr(pipeable, "exit_with_error", _raise_original)
-
-    entrypoint = tmp_path / "entry.py"
-    entrypoint.write_text("# dummy\n")
-    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
-
-    samples_csv = _write_samples_csv(tmp_path, [("0000", "SampleA")])
-    manual_input = ManualInput(
-        params=Params(threshold=1),
-        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
-        sample_names=samples_csv,
-    )
-
-    child_error = "child says hi"
-    error_tar = create_tar_from_dict({"error": child_error})
-
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        return SimpleNamespace(
-            returncode=1,
-            stdout=error_tar.getvalue(),
-            stderr=b"raw stderr should be ignored",
-        )
-
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
-
-    ctx = read_context(
-        Params,
-        ImageResults,
-        manual_input=manual_input,
-        output_dir=tmp_path / "out",
-    )
-
-    with pytest.raises(RuntimeError) as excinfo:
-        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
-
-    assert "エラーが発生しました" in str(excinfo.value)
-    stderr_text = stderr_buf.getvalue().decode("utf-8")
-    assert child_error in stderr_text
-    assert "raw stderr should be ignored" not in stderr_text
-
-
 def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
     monkeypatch, tmp_path: Path
 ):
