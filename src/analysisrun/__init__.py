@@ -1,6 +1,7 @@
 from analysisrun.pipeable import (
     AnalysisContext,
     AnalyzeArgs,
+    Fields,
     ManualInput,
     PostprocessArgs,
     VirtualFile,
@@ -12,6 +13,7 @@ from analysisrun.pipeable import (
 __all__ = [
     "AnalysisContext",
     "AnalyzeArgs",
+    "Fields",
     "ManualInput",
     "PostprocessArgs",
     "VirtualFile",
