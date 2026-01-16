@@ -8,9 +8,12 @@ from pathlib import Path
 from pixelmatch.contrib.PIL import pixelmatch
 from PIL import Image
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-GOLDEN_DIR = REPO_ROOT / "tests" / "testdata" / "results"
-ORCHESTRATOR_MAIN = REPO_ROOT / "tests" / "testimpl" / "orchestrator" / "main.go"
+REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
+SCRIPT = REPO_ROOT / "example" / "benchmark" / "testimpl"
+GOLDEN_DIR = REPO_ROOT / "example" / "benchmark" / "golden"
+ORCHESTRATOR_MAIN = (
+    REPO_ROOT / "example" / "benchmark" / "testimpl" / "orchestrator" / "main.go"
+)
 IMAGE_ANALYSIS_RESULT = REPO_ROOT / "tests" / "testdata" / "image_analysis_result.csv"
 SAMPLES_CSV = REPO_ROOT / "tests" / "testdata" / "samples.csv"
 
@@ -67,7 +70,7 @@ def _run_one(*, mode: str) -> float:
             "notebook" if mode == "sequential" else "terminal"
         )
 
-        cmd = ["uv", "run", "./tests/testimpl"]
+        cmd = ["uv", "run", SCRIPT]
         t0 = time.perf_counter()
         proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
         t1 = time.perf_counter()
@@ -96,11 +99,13 @@ def _run_distributed(*, run_mode: str, orchestrator_path: Path) -> float:
     if run_mode not in {"whole", "only"}:
         raise ValueError(f"unknown run_mode: {run_mode}")
 
-    with tempfile.TemporaryDirectory(prefix=f"analysisrun-bench-distributed-{run_mode}-") as td:
+    with tempfile.TemporaryDirectory(
+        prefix=f"analysisrun-bench-distributed-{run_mode}-"
+    ) as td:
         out_dir = Path(td)
 
         env = os.environ.copy()
-        env["SCRIPT_PATH"] = "./tests/testimpl"
+        env["SCRIPT_PATH"] = str(SCRIPT)
         env["IMAGE_ANALYSIS_RESULT"] = str(IMAGE_ANALYSIS_RESULT)
         env["SAMPLES"] = str(SAMPLES_CSV)
         env["PARAMETERS"] = "{}"
