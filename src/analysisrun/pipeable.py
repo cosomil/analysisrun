@@ -200,6 +200,14 @@ class AnalyzeArgs[
     """
     解析全体に関わるパラメータ
     """
+    data_name: str
+    """
+    画像解析結果CSVのデータ名
+    """
+    sample_name: str
+    """
+    サンプル名
+    """
     image_analysis_results: ImageAnalysisResults
     """
     解析対象となる画像解析結果の定義
@@ -365,7 +373,15 @@ class AnalysisContext[
                 field_numbers,
             )
             with redirect_stdout_to_stderr(stderr):
-                series = analyze(AnalyzeArgs(parsed.params, lanes, output))
+                series = analyze(
+                    AnalyzeArgs(
+                        parsed.params,
+                        parsed.data_name,
+                        parsed.sample_name,
+                        lanes,
+                        output,
+                    )
+                )
             _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
         except Exception as exc:
             exit_with_error(
@@ -448,7 +464,9 @@ class AnalysisContext[
                 data_name,
                 field_numbers,
             )
-            series = analyze(AnalyzeArgs(self.params, lanes, self.output))
+            series = analyze(
+                AnalyzeArgs(self.params, data_name, sample_name, lanes, self.output)
+            )
             _ensure_result_annotations(series, data_name, sample_name)
             results.append(series)
 
