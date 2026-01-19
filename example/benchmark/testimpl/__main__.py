@@ -188,7 +188,9 @@ def postprocess(args: ar.PostprocessArgs[BenchParameters]):
 
 test_dir = Path(__file__).parent.parent.parent.parent.resolve() / "tests"
 env_output_dir = os.getenv("ANALYSISRUN_OUTPUT_DIR")
-output_dir = Path(env_output_dir) if env_output_dir else test_dir / "golden"
+output_dir = (
+    Path(env_output_dir) if env_output_dir else Path(__file__).parent.parent / "golden"
+)
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # 入力の読み取りと、Runnerの決定を行う
