@@ -492,14 +492,42 @@ class AnalysisContext[
         params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # データ名の重複排除
+        target_data: list[str] = []
+        seen_data: set[str] = set()
+        for data_name, _ in sample_pairs:
+            if data_name not in seen_data:
+                seen_data.add(data_name)
+                target_data.append(data_name)
+
+        # データ（レーン）ごとに画像解析データを分割する
+        lane_data_by_dataset: dict[str, dict[str, pd.DataFrame]] = {}
+        for name, df in raw_data.items():
+            lane_scanner = Lanes(
+                whole_data=CleansedData(_data=df.copy()),
+                target_data=target_data,
+                field_numbers=state.field_numbers,
+            )
+            lane_data_by_dataset[name] = {
+                fields.data_name: fields.data.drop(
+                    columns=["ImageAnalysisMethod", "Data"], errors="ignore"
+                )
+                for fields in lane_scanner
+            }
+
         def _build_tar_buffer(data_name: str, sample_name: str) -> BytesIO:
             payload: dict[str, Any] = {
                 "data_name": data_name,
                 "sample_name": sample_name,
                 "params": params_payload,
             }
-            for name, df in raw_data.items():
-                payload[f"image_analysis_results/{name}"] = _serialize_dataframe(df)
+            for name, per_lane in lane_data_by_dataset.items():
+                lane_df = per_lane.get(data_name)
+                if lane_df is None:
+                    lane_df = raw_data[name].iloc[0:0]
+                payload[f"image_analysis_results/{name}"] = _serialize_dataframe(
+                    lane_df
+                )
             return create_tar_from_dict(payload)
 
         def _run_lane(
