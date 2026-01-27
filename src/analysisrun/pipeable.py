@@ -741,6 +741,10 @@ def read_context[
             stderr=_stderr,
             parsed_input=parsed,
         )
+    elif mode == "showschema":
+        _stdout.write(b"{}")
+        _stdout.flush()
+        raise SystemExit(0)
     else:
         if interactivity is None:
             exit_with_error(
