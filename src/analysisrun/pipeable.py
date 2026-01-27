@@ -62,6 +62,10 @@ class Output(Protocol):
     ) -> None: ...
 
 
+class NoParams(BaseModel):
+    pass
+
+
 @dataclass
 class ManualInput[Params: BaseModel]:
     """
