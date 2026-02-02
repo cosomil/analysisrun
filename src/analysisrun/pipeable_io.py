@@ -163,6 +163,41 @@ class AnalysisInputModel[
     }
 
 
+class AnalyzeMultiInputModel[
+    Params: BaseModel,
+    ImageAnalysisResultsInput: BaseModel,
+](BaseModel):
+    """
+    分散実行時に複数ターゲットの解析を実行する際の入力データモデル
+
+    `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
+
+    Examples
+    --------
+    >>> # 入力tar構造:
+    >>> {
+    ...     "targets": {"0001": "SampleA", "0002": "SampleB"},
+    ...     "params": {...},
+    ...     "image_analysis_results": {
+    ...         "activity_spots": BytesIO(...),
+    ...         "surrounding_spots": BytesIO(...),
+    ...     }
+    ... }
+    """
+
+    targets: dict[str, str] = Field(
+        description="解析対象データ情報。keyはdata_name、valueはsample_name"
+    )
+    params: Params = Field(description="解析全体に関わるパラメータ")
+    image_analysis_results: ImageAnalysisResultsInput = Field(
+        description="画像解析結果CSVデータ"
+    )
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+    }
+
+
 class PostprocessInputModel[
     Params: BaseModel,
 ](BaseModel):

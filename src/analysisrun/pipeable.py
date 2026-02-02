@@ -30,6 +30,7 @@ from analysisrun.helper import read_dict
 from analysisrun.interactive import VirtualFile, scan_model_input
 from analysisrun.pipeable_io import (
     AnalysisInputModel,
+    AnalyzeMultiInputModel,
     ExitCodes,
     PostprocessInputModel,
     exit_with_error,
@@ -248,6 +249,18 @@ class _AnalysisState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState
 
 
 @dataclass
+class _AnalyzeMultiState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
+    """
+    複数ターゲットの解析モード用のState
+
+    ANALYSISRUN_MODE=analyzemulti で使用される。
+    """
+
+    parsed_input: AnalyzeMultiInputModel[ParamsT, ImageInputModelT]
+    field_numbers: list[int]
+
+
+@dataclass
 class _PostprocessState[ParamsT: BaseModel](_BaseState):
     parsed_input: PostprocessInputModel[ParamsT]
 
@@ -283,6 +296,7 @@ class AnalysisContext[
     output: Output
     state: (
         _AnalysisState[Params, BaseModel]
+        | _AnalyzeMultiState[Params, BaseModel]
         | _PostprocessState[Params]
         | _SequentialState
         | _ParallelState
@@ -292,11 +306,17 @@ class AnalysisContext[
     def mode(
         self,
     ) -> Literal[
-        "analysis-only", "postprocess-only", "sequential", "parallel-entrypoint"
+        "analysis-only",
+        "analyze-multi",
+        "postprocess-only",
+        "sequential",
+        "parallel-entrypoint",
     ]:
         match self.state:
             case _AnalysisState():
                 return "analysis-only"
+            case _AnalyzeMultiState():
+                return "analyze-multi"
             case _PostprocessState():
                 return "postprocess-only"
             case _SequentialState():
@@ -329,6 +349,8 @@ class AnalysisContext[
             match self.state:
                 case _AnalysisState():
                     return self._run_analysis_only(analyze, stdout, stderr)
+                case _AnalyzeMultiState():
+                    return self._run_analyze_multi(stdout, stderr)
                 case _PostprocessState():
                     return self._run_postprocess_only(postprocess, stdout, stderr)
                 case _SequentialState():
@@ -401,6 +423,169 @@ class AnalysisContext[
         tar_buf = create_tar_from_dict(tar_data)
         stdout.write(tar_buf.getvalue())
         stdout.flush()
+        sys.exit(0)
+
+    def _run_analyze_multi(
+        self,
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+    ) -> pd.DataFrame:
+        """
+        複数ターゲットの解析を並列実行し、結果をtar形式で標準出力に出力する。
+
+        各ターゲットは独立したサブプロセスで ANALYSISRUN_MODE=analyze として実行される。
+        いずれかのターゲットでエラーが発生した場合、全体を失敗として扱う。
+
+        出力フォーマット:
+            {
+                "{data_name}/analysis_result": BytesIO (pd.Series as CSV),
+                "{data_name}/images/{image_name}": BytesIO (PNG/image files),
+            }
+
+        Raises
+        ------
+        SystemExit
+            処理完了時（成功/失敗問わず）
+        """
+        assert isinstance(self.state, _AnalyzeMultiState)
+        state = self.state
+        parsed: AnalyzeMultiInputModel = state.parsed_input
+        field_numbers = state.field_numbers
+
+        # Get entrypoint for subprocess execution
+        entrypoint = get_entrypoint()
+        assert entrypoint is not None, "Entry point not found for subprocess execution"
+
+        # Serialize params once for all targets
+        params_payload = parsed.params.model_dump_json()
+
+        # Convert image_analysis_results to dict of dataframes
+        image_analysis_results_dict: dict[str, pd.DataFrame] = {}
+        for name in type(parsed.image_analysis_results).model_fields:
+            virtual_file = getattr(parsed.image_analysis_results, name)
+            df = _deserialize_dataframe_with_leading_zeroes(virtual_file.unwrap())
+            image_analysis_results_dict[name] = df
+
+        # データ（レーン）ごとに画像解析データを分割する
+        target_data = list(parsed.targets.keys())
+        lane_data_by_dataset: dict[str, dict[str, pd.DataFrame]] = {}
+        for name, df in image_analysis_results_dict.items():
+            lane_scanner = Lanes(
+                whole_data=CleansedData(_data=df.copy()),
+                target_data=target_data,
+                field_numbers=field_numbers,
+            )
+            lane_data_by_dataset[name] = {
+                fields.data_name: fields.data.drop(
+                    columns=["ImageAnalysisMethod", "Data"], errors="ignore"
+                )
+                for fields in lane_scanner
+            }
+
+        # Helper function to build tar input for single target
+        def _build_tar_buffer(data_name: str, sample_name: str) -> BytesIO:
+            image_results: dict[str, pd.DataFrame] = {}
+            for name, per_lane in lane_data_by_dataset.items():
+                lane_df = per_lane.get(data_name)
+                if lane_df is None:
+                    lane_df = image_analysis_results_dict[name].iloc[0:0]
+                image_results[name] = lane_df
+            return _build_analysis_tar_buffer(
+                params_payload,
+                data_name,
+                sample_name,
+                image_results,
+            )
+
+        # Helper function to run single target in subprocess
+        def _run_single_target(
+            item: tuple[str, str],
+        ) -> tuple[str, pd.Series | None, dict[str, BytesIO], Exception | None]:
+            """
+            単一ターゲットをサブプロセスで実行する。
+
+            Returns
+            -------
+            tuple
+                (data_name, series, images, error)
+            """
+            data_name, sample_name = item
+
+            try:
+                tar_buf = _build_tar_buffer(data_name, sample_name)
+                proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyze")
+
+                if proc.returncode != 0:
+                    error, images, err_out = _extract_error_and_images_from_process(
+                        proc
+                    )
+                    if error is None:
+                        error = Exception(err_out if err_out else "Unknown error")
+                    return (data_name, None, images, error)
+
+                # Success case - parse output tar
+                tar_result = read_tar_as_dict(BytesIO(proc.stdout))
+
+                # Extract analysis result
+                series = None
+                if "analysis_result" in tar_result:
+                    series = _deserialize_series(tar_result["analysis_result"])
+
+                # Extract images
+                images = _extract_images_from_tar_dict(tar_result)
+
+                return (data_name, series, images, None)
+
+            except Exception as e:
+                return (data_name, None, {}, e)
+
+        # Execute all targets in parallel using ThreadPoolExecutor (default max_workers)
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(_run_single_target, parsed.targets.items()))
+
+        # Check for errors
+        errors: list[tuple[str, Exception]] = []
+        for data_name, series, images, error in results:
+            if error is not None:
+                errors.append((data_name, error))
+
+        # If any errors occurred, aggregate and exit with error
+        if errors:
+            error_messages = []
+            for data_name, error in errors:
+                error_messages.append(f"\n{'=' * 60}")
+                error_messages.append(f"Target: {data_name}")
+                error_messages.append(f"{'=' * 60}")
+                error_messages.append(str(error))
+
+            aggregated_error = Exception("\n".join(error_messages))
+
+            exit_with_error(
+                ExitCodes.PROCESSING_ERROR,
+                f"複数ターゲットの解析中に{len(errors)}件のエラーが発生しました。",
+                stdout,
+                stderr,
+                aggregated_error,
+            )
+
+        # Build output tar with all results
+        tar_data: dict[str, Any] = {}
+
+        # Add analysis results and images for each target
+        for data_name, series, images, error in results:
+            if series is not None:
+                # Analysis result for this target
+                tar_data[f"{data_name}/analysis_result"] = _serialize_series(series)
+
+                # Images for this target
+                for image_name, image_buf in images.items():
+                    tar_data[f"{data_name}/images/{image_name}"] = image_buf
+
+        # Write output and exit
+        tar_buf = create_tar_from_dict(tar_data)
+        stdout.write(tar_buf.getvalue())
+        stdout.flush()
+
         sys.exit(0)
 
     def _run_postprocess_only(
@@ -520,52 +705,32 @@ class AnalysisContext[
             }
 
         def _build_tar_buffer(data_name: str, sample_name: str) -> BytesIO:
-            payload: dict[str, Any] = {
-                "data_name": data_name,
-                "sample_name": sample_name,
-                "params": params_payload,
-            }
+            image_results: dict[str, pd.DataFrame] = {}
             for name, per_lane in lane_data_by_dataset.items():
                 lane_df = per_lane.get(data_name)
                 if lane_df is None:
                     lane_df = raw_data[name].iloc[0:0]
-                payload[f"image_analysis_results/{name}"] = _serialize_dataframe(
-                    lane_df
-                )
-            return create_tar_from_dict(payload)
+                image_results[name] = lane_df
+            return _build_analysis_tar_buffer(
+                params_payload,
+                data_name,
+                sample_name,
+                image_results,
+            )
 
         def _run_lane(
             args: tuple[str, str],
         ) -> tuple[str, str, Optional[pd.Series], Optional[tuple[str, str]]]:
             data_name, sample_name = args
             tar_buf = _build_tar_buffer(data_name, sample_name)
-            env = os.environ.copy()
             # entrypoint 側は ANALYSISRUN_MODE を見てanalysis-onlyモードで動作する。
-            env["ANALYSISRUN_MODE"] = "analyze"
-            proc = subprocess.run(
-                [sys.executable, str(entrypoint)],
-                input=tar_buf.getvalue(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-            )
-            tar_result: dict[str, Any] | None = None
+            proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyze")
             if proc.returncode != 0:
-                err_msg = ""
-                err_out = proc.stderr.decode(errors="ignore")
-                if not err_msg:
-                    err_msg = "不明なエラーが発生しました。"
-                try:
-                    # 子プロセスが `exit_with_error(...)` した場合、標準出力からエラーの内容を読み取ることができる。
-                    error_tar = read_tar_as_dict(BytesIO(proc.stdout))
-                    if isinstance(error_tar, dict):
-                        tar_result = error_tar
-                        if "error" in error_tar:
-                            err_msg = error_tar["error"]
-                except Exception:
-                    pass
-                if tar_result is not None:
-                    images = _extract_images_from_tar_dict(tar_result)
+                err, images, err_out = _extract_error_and_images_from_process(proc)
+                err_msg = (
+                    str(err) if err is not None else "不明なエラーが発生しました。"
+                )
+                if images:
                     _save_images_to_dir(images, output_dir)
                 return data_name, sample_name, None, (err_msg, err_out)
 
@@ -700,6 +865,7 @@ def read_context[
     output_impl: Output = _NullOutput()
     ctx_state: (
         _AnalysisState[Params, BaseModel]
+        | _AnalyzeMultiState[Params, BaseModel]
         | _PostprocessState[Params]
         | _SequentialState
         | _ParallelState
@@ -744,6 +910,32 @@ def read_context[
             stdout=_stdout,
             stderr=_stderr,
             parsed_input=parsed,
+        )
+    elif mode == "analyzemulti":
+        # 複数ターゲットの解析モード
+        try:
+            tar_dict = read_tar_as_dict(_stdin)
+            tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
+            tar_dict["targets"] = _maybe_load_json(tar_dict.get("targets"))
+
+            AnalyzeMultiInput = AnalyzeMultiInputModel[
+                params, image_analysis_results_input_model
+            ]
+            parsed = AnalyzeMultiInput(**tar_dict)
+            params_value = parsed.params
+        except Exception as exc:
+            exit_with_error(
+                ExitCodes.INVALID_USAGE,
+                "入力データの読み込みに失敗しました。入力形式を確認してください。",
+                _stdout,
+                _stderr,
+                exc,
+            )
+        ctx_state = _AnalyzeMultiState(
+            stdout=_stdout,
+            stderr=_stderr,
+            parsed_input=parsed,
+            field_numbers=field_numbers,
         )
     elif mode == "showschema":
         _stdout.write(b"{}")
@@ -1038,6 +1230,22 @@ def _extract_images_from_tar_dict(tar_dict: dict[str, Any]) -> dict[str, BytesIO
     return {}
 
 
+def _build_analysis_tar_buffer(
+    params_payload: str,
+    data_name: str,
+    sample_name: str,
+    image_results: dict[str, pd.DataFrame],
+) -> BytesIO:
+    payload: dict[str, Any] = {
+        "data_name": data_name,
+        "sample_name": sample_name,
+        "params": params_payload,
+    }
+    for name, df in image_results.items():
+        payload[f"image_analysis_results/{name}"] = _serialize_dataframe(df)
+    return create_tar_from_dict(payload)
+
+
 def _save_images_to_dir(images: dict[str, BytesIO], output_dir: Path) -> None:
     for name, buf in images.items():
         buf.seek(0)
@@ -1045,6 +1253,43 @@ def _save_images_to_dir(images: dict[str, BytesIO], output_dir: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as f:
             f.write(buf.read())
+
+
+def _run_entrypoint_with_tar(
+    entrypoint: Path,
+    tar_buf: BytesIO,
+    mode: str,
+) -> subprocess.CompletedProcess[bytes]:
+    env = os.environ.copy()
+    env["ANALYSISRUN_MODE"] = mode
+    return subprocess.run(
+        [sys.executable, str(entrypoint)],
+        input=tar_buf.getvalue(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+
+def _try_read_tar_from_bytes(data: bytes) -> dict[str, Any] | None:
+    try:
+        return read_tar_as_dict(BytesIO(data))
+    except Exception:
+        return None
+
+
+def _extract_error_and_images_from_process(
+    proc: subprocess.CompletedProcess[bytes],
+) -> tuple[Exception | None, dict[str, BytesIO], str]:
+    stderr_text = proc.stderr.decode("utf-8", errors="ignore")
+    tar_result = _try_read_tar_from_bytes(proc.stdout)
+    if isinstance(tar_result, dict):
+        images = _extract_images_from_tar_dict(tar_result)
+        error_str = tar_result.get("error")
+        if error_str:
+            return Exception(error_str), images, stderr_text
+        return None, images, stderr_text
+    return None, {}, stderr_text
 
 
 def _build_postprocess_tar_entries(result_df: pd.DataFrame) -> dict[str, BytesIO]:

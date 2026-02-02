@@ -670,3 +670,186 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
     assert "0000 (SampleA)" in stderr_text
     assert child_error in stderr_text
     assert (out_dir / "error_plot.png").exists()
+
+
+def test_run_analyze_multi_outputs_tar_with_multiple_targets(
+    monkeypatch, tmp_path: Path
+):
+    """
+    ANALYSISRUN_MODE=analyzemulti で複数ターゲットの解析が並列実行され、
+    正しいフォーマットで tar 出力されることを確認する。
+    """
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
+    stdout_buf = BytesIO()
+
+    tar_buf = create_tar_from_dict(
+        {
+            "targets": json.dumps({"0000": "SampleA", "0001": "SampleB"}),
+            "params": Params(threshold=3).model_dump_json(),
+            "image_analysis_results/activity_spots": _load_csv_df(
+                IMAGE_ANALYSIS_RESULT_CSV
+            ),
+        }
+    )
+
+    # Setup entrypoint mock
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+
+    import analysisrun.pipeable as pipeable
+
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    # Mock subprocess.run to simulate successful analyze mode execution
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        data_name = tar_in["data_name"]
+        sample_name = tar_in["sample_name"]
+
+        # Simulate analysis result
+        series_df = pd.DataFrame(
+            {
+                "data_name": [data_name],
+                "sample_name": [sample_name],
+                "total_value": [100 if data_name == "0000" else 200],
+            }
+        )
+        series_buf = BytesIO()
+        series_df.to_csv(series_buf, index=False)
+        series_buf.seek(0)
+
+        # Simulate image output
+        result_tar = create_tar_from_dict(
+            {
+                "analysis_result": series_buf,
+                "images/plot.png": BytesIO(b"fake-image-data"),
+            }
+        )
+
+        return SimpleNamespace(returncode=0, stdout=result_tar.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=lambda args: pd.Series({"unused": 0}))
+
+    assert excinfo.value.code == 0
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+
+    # Verify output structure: {data_name}/analysis_result
+    # read_tar_as_dict creates nested dicts for paths with "/"
+    assert "0000" in tar_result
+    assert "0001" in tar_result
+    assert "analysis_result" in tar_result["0000"]
+    assert "analysis_result" in tar_result["0001"]
+
+    # Verify analysis results
+    result_0000 = pd.read_csv(
+        tar_result["0000"]["analysis_result"],
+        dtype={"data_name": str, "sample_name": str},
+    )
+    assert result_0000.iloc[0]["total_value"] == 100
+    assert result_0000.iloc[0]["data_name"] == "0000"
+    assert result_0000.iloc[0]["sample_name"] == "SampleA"
+
+    result_0001 = pd.read_csv(
+        tar_result["0001"]["analysis_result"],
+        dtype={"data_name": str, "sample_name": str},
+    )
+    assert result_0001.iloc[0]["total_value"] == 200
+    assert result_0001.iloc[0]["data_name"] == "0001"
+    assert result_0001.iloc[0]["sample_name"] == "SampleB"
+
+    # Verify output structure: {data_name}/images/{image_name}
+    assert "images" in tar_result["0000"]
+    assert "images" in tar_result["0001"]
+    assert "plot.png" in tar_result["0000"]["images"]
+    assert "plot.png" in tar_result["0001"]["images"]
+
+    # Verify images
+    assert isinstance(tar_result["0000"]["images"]["plot.png"], BytesIO)
+    assert tar_result["0000"]["images"]["plot.png"].getbuffer().nbytes > 0
+    assert isinstance(tar_result["0001"]["images"]["plot.png"], BytesIO)
+    assert tar_result["0001"]["images"]["plot.png"].getbuffer().nbytes > 0
+
+
+def test_run_analyze_multi_handles_target_failures(monkeypatch, tmp_path: Path):
+    """
+    ANALYSISRUN_MODE=analyzemulti で一部のターゲットが失敗した場合、
+    全体が失敗として扱われることを確認する。
+    """
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
+
+    stdout_buf = BytesIO()
+
+    tar_buf = create_tar_from_dict(
+        {
+            "targets": json.dumps({"0000": "SampleA", "0001": "SampleB"}),
+            "params": Params(threshold=3).model_dump_json(),
+            "image_analysis_results/activity_spots": _load_csv_df(
+                IMAGE_ANALYSIS_RESULT_CSV
+            ),
+        }
+    )
+
+    # Setup entrypoint mock
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+
+    import analysisrun.pipeable as pipeable
+
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    # Mock subprocess.run to simulate failure for one target
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        data_name = tar_in["data_name"]
+
+        if data_name == "0001":
+            # Simulate failure
+            error_tar = create_tar_from_dict({"error": "Target 0001 failed"})
+            return SimpleNamespace(
+                returncode=1, stdout=error_tar.getvalue(), stderr=b""
+            )
+
+        # Success for 0000
+        series_df = pd.DataFrame(
+            {"data_name": [data_name], "sample_name": ["SampleA"], "total_value": [100]}
+        )
+        series_buf = BytesIO()
+        series_df.to_csv(series_buf, index=False)
+        series_buf.seek(0)
+
+        result_tar = create_tar_from_dict({"analysis_result": series_buf})
+        return SimpleNamespace(returncode=0, stdout=result_tar.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=lambda args: pd.Series({"unused": 0}))
+
+    # Should exit with error code
+    assert excinfo.value.code == 1
+
+    # Verify error output in tar (summary message only)
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert "error" in tar_result
+    error_msg = tar_result["error"]
+    assert "複数ターゲットの解析中に" in error_msg
+    assert "1件のエラーが発生しました" in error_msg
