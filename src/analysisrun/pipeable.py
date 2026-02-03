@@ -407,8 +407,8 @@ class AnalysisContext[
         specs = state.specs
         field_numbers = state.field_numbers
 
-        # TARストリームを開く（パイプモード: w|gz）
-        with tarfile.open(fileobj=stdout, mode="w|gz") as tar:
+        # TARストリームを開く（パイプモード: w|）
+        with tarfile.open(fileobj=stdout, mode="w|") as tar:
             output = _TarStreamingOutput(tar)
 
             try:
