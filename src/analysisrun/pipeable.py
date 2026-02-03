@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -34,6 +36,7 @@ from analysisrun.pipeable_io import (
     ExitCodes,
     PostprocessInputModel,
     exit_with_error,
+    exit_with_error_streaming,
     list_from_dict,
     redirect_stdout_to_stderr,
 )
@@ -379,49 +382,80 @@ class AnalysisContext[
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
+        """
+        単一ターゲットの解析を実行し、結果をストリーミングTAR形式で標準出力に出力する。
+
+        画像は生成されるたびに即座にTARエントリとして出力される。
+        エラー発生時はErrorResult仕様に従い"error"エントリを追加して処理を終了する。
+
+        出力TAR構造（正常時）:
+            images/{image_name}  # 画像が生成される順に追加
+            analysis_result      # 最後に追加
+
+        出力TAR構造（エラー時）:
+            images/{image_name}  # エラー前に生成された画像
+            error                # エラーメッセージ（ErrorResult仕様）
+
+        Raises
+        ------
+        SystemExit
+            処理完了時（成功/失敗問わず）
+        """
         assert isinstance(self.state, _AnalysisState)
         state = self.state
         parsed = state.parsed_input
         specs = state.specs
         field_numbers = state.field_numbers
 
-        # 分散/サブプロセス実行では、画像はファイル保存できないため tar 内に格納して返す（完全な分散実行と同様の挙動）。
-        output = _TarCollectingOutput()
-        try:
-            cleansed_data = _load_and_cleanse_image_results(
-                parsed.image_analysis_results,
-                specs,
-            )
-            lanes = _build_fields_namedtuple(
-                self.image_analysis_results,
-                cleansed_data,
-                parsed.data_name,
-                field_numbers,
-            )
-            with redirect_stdout_to_stderr(stderr):
-                series = analyze(
-                    AnalyzeArgs(
-                        parsed.params,
-                        parsed.data_name,
-                        parsed.sample_name,
-                        lanes,
-                        output,
-                    )
-                )
-            _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
-        except Exception as exc:
-            exit_with_error(
-                ExitCodes.PROCESSING_ERROR,
-                "解析処理中にエラーが発生しました。",
-                stdout,
-                stderr,
-                exc,
-            )
+        # TARストリームを開く（パイプモード: w|gz）
+        with tarfile.open(fileobj=stdout, mode="w|gz") as tar:
+            output = _TarStreamingOutput(tar)
 
-        tar_data = {"analysis_result": _serialize_series(series)}
-        tar_data.update({f"images/{name}": buf for name, buf in output.images.items()})
-        tar_buf = create_tar_from_dict(tar_data)
-        stdout.write(tar_buf.getvalue())
+            try:
+                # データのクレンジングとレーン構築
+                cleansed_data = _load_and_cleanse_image_results(
+                    parsed.image_analysis_results,
+                    specs,
+                )
+                lanes = _build_fields_namedtuple(
+                    self.image_analysis_results,
+                    cleansed_data,
+                    parsed.data_name,
+                    field_numbers,
+                )
+
+                # 解析実行（画像は生成されるたびにTARに書き込まれる）
+                with redirect_stdout_to_stderr(stderr):
+                    series = analyze(
+                        AnalyzeArgs(
+                            parsed.params,
+                            parsed.data_name,
+                            parsed.sample_name,
+                            lanes,
+                            output,
+                        )
+                    )
+                _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
+            except Exception as exc:
+                exit_with_error_streaming(
+                    ExitCodes.PROCESSING_ERROR,
+                    "解析処理中にエラーが発生しました。",
+                    tar,
+                    stderr,
+                    exc,
+                )
+
+            # 解析結果をTARに追加（画像の後）
+            result_csv = _serialize_series(series)
+            result_csv.seek(0)
+            result_data = result_csv.read()
+
+            tar_info = tarfile.TarInfo(name="analysis_result")
+            tar_info.size = len(result_data)
+            tar_info.pax_headers = {"is_file": "true"}
+            tar.addfile(tar_info, BytesIO(result_data))
+
+        # 正常終了: TAR自動クローズ済み
         stdout.flush()
         sys.exit(0)
 
@@ -539,8 +573,8 @@ class AnalysisContext[
             except Exception as e:
                 return (data_name, None, {}, e)
 
-        # Execute all targets in parallel using ThreadPoolExecutor (default max_workers)
-        with ThreadPoolExecutor() as executor:
+        # Execute all targets in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
             results = list(executor.map(_run_single_target, parsed.targets.items()))
 
         # Check for errors
@@ -1050,15 +1084,35 @@ def read_context[
     return ctx
 
 
-class _TarCollectingOutput(Output):
-    def __init__(self):
-        self.images: dict[str, BytesIO] = {}
+class _TarStreamingOutput(Output):
+    """
+    画像をストリームでTARに即座に書き込むOutputクラス。
+
+    画像が生成されるたびにTARエントリとして追加し、
+    メモリに蓄積しない。
+    """
+
+    def __init__(self, tar: tarfile.TarFile, prefix: str = "images"):
+        self.tar = tar
+        self.prefix = prefix
+        # スレッドセーフ対応
+        self.lock = threading.Lock()
 
     def __call__(self, fig, name: str, image_type: str, **kwargs) -> None:
+        # 画像をバッファに保存
         buf = FileIO({"image_type": image_type})
         fig.savefig(buf, **kwargs)
         buf.seek(0)
-        self.images[name] = buf
+        image_data = buf.read()
+
+        # TARエントリとして即座に書き込み
+        with self.lock:
+            tar_info = tarfile.TarInfo(name=f"{self.prefix}/{name}")
+            tar_info.size = len(image_data)
+            tar_info.pax_headers = {"is_file": "true", "image_type": image_type}
+            self.tar.addfile(tar_info, BytesIO(image_data))
+
+        # メモリ解放
         fig.clear()
         plt.close(fig)
 

@@ -1,5 +1,6 @@
 import io
 import sys
+import tarfile
 import traceback
 from contextlib import contextmanager
 from enum import Enum
@@ -139,6 +140,51 @@ def exit_with_error(
         raise exception or RuntimeError(message)
     else:
         sys.exit(code.value)
+
+
+def exit_with_error_streaming(
+    code: ExitCodes,
+    message: str,
+    tar: tarfile.TarFile,
+    stderr: IO[bytes],
+    exception: Optional[Exception] = None,
+) -> NoReturn:
+    """
+    ストリーミングTAR用のエラー終了処理。
+    ErrorResult仕様に従い、TARに"error"エントリを追加する。
+
+    sys.exit()を呼ぶが、with文の__exit__が必ず実行されるため
+    TARの正常なクローズが保証される。
+
+    Parameters
+    ----------
+    code
+        終了コード
+    message
+        エラーメッセージ
+    tar
+        出力先のTARストリーム
+    stderr
+        標準エラー出力ストリーム
+    exception
+        発生した例外オブジェクト
+    """
+    # スタックトレースを標準エラー出力に出力
+    if exception is not None:
+        details = traceback.format_exception(exception)
+        _print("".join(details), stderr)
+        stderr.flush()
+
+    # ErrorResult仕様に従ってTARエントリを作成
+    # create_tar_from_dict(ErrorResult(error=message).model_dump()) と同じ構造
+    error_content = message.encode("utf-8")
+    tar_info = tarfile.TarInfo(name="error")
+    tar_info.size = len(error_content)
+    tar.addfile(tar_info, io.BytesIO(error_content))
+
+    # sys.exit()を呼ぶ
+    # SystemExitが発生し、with文の__exit__が呼ばれてTARがクローズされる
+    sys.exit(code.value)
 
 
 class AnalysisInputModel[
