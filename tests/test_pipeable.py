@@ -672,11 +672,11 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
     assert (out_dir / "error_plot.png").exists()
 
 
-def test_run_analyze_multi_outputs_tar_with_multiple_targets(
-    monkeypatch, tmp_path: Path
+def test_run_analyze_multi_outputs_tar_with_multiple_targets_sequential(
+    monkeypatch,
 ):
     """
-    ANALYSISRUN_MODE=analyzemulti で複数ターゲットの解析が並列実行され、
+    ANALYSISRUN_MODE=analyzemulti で複数ターゲットの解析がシーケンシャルに実行され、
     正しいフォーマットで tar 出力されることを確認する。
     """
     monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
@@ -692,44 +692,6 @@ def test_run_analyze_multi_outputs_tar_with_multiple_targets(
         }
     )
 
-    # Setup entrypoint mock
-    entrypoint = tmp_path / "entry.py"
-    entrypoint.write_text("# dummy\n")
-
-    import analysisrun.pipeable as pipeable
-
-    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
-
-    # Mock subprocess.run to simulate successful analyze mode execution
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
-        data_name = tar_in["data_name"]
-        sample_name = tar_in["sample_name"]
-
-        # Simulate analysis result
-        series_df = pd.DataFrame(
-            {
-                "data_name": [data_name],
-                "sample_name": [sample_name],
-                "total_value": [100 if data_name == "0000" else 200],
-            }
-        )
-        series_buf = BytesIO()
-        series_df.to_csv(series_buf, index=False)
-        series_buf.seek(0)
-
-        # Simulate image output
-        result_tar = create_tar_from_dict(
-            {
-                "analysis_result": series_buf,
-                "images/plot.png": BytesIO(b"fake-image-data"),
-            }
-        )
-
-        return SimpleNamespace(returncode=0, stdout=result_tar.getvalue(), stderr=b"")
-
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
-
     ctx = read_context(
         Params,
         ImageResults,
@@ -737,14 +699,40 @@ def test_run_analyze_multi_outputs_tar_with_multiple_targets(
         stdout=stdout_buf,
     )
 
+    call_order = []
+
+    def analyze(args):
+        # 呼び出し順序を記録
+        call_order.append((args.data_name, args.sample_name))
+
+        df = args.image_analysis_results.activity_spots.data
+
+        # 画像を出力
+        fig = plt.figure()
+        plt.plot([0, 1], [0, 1])
+        args.output(fig, "plot.png", "png")
+
+        # 各ターゲットごとに異なる値を返す
+        total = int(df["Value"].sum())
+        return pd.Series(
+            {
+                "data_name": args.data_name,
+                "sample_name": args.sample_name,
+                "total_value": total,
+            }
+        )
+
     with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis(analyze=lambda args: pd.Series({"unused": 0}))
+        ctx.run_analysis(analyze=analyze)
 
     assert excinfo.value.code == 0
+
+    # シーケンシャル実行なので、呼び出し順序が保証される
+    assert call_order == [("0000", "SampleA"), ("0001", "SampleB")]
+
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
 
     # Verify output structure: {data_name}/analysis_result
-    # read_tar_as_dict creates nested dicts for paths with "/"
     assert "0000" in tar_result
     assert "0001" in tar_result
     assert "analysis_result" in tar_result["0000"]
@@ -755,17 +743,17 @@ def test_run_analyze_multi_outputs_tar_with_multiple_targets(
         tar_result["0000"]["analysis_result"],
         dtype={"data_name": str, "sample_name": str},
     )
-    assert result_0000.iloc[0]["total_value"] == 100
     assert result_0000.iloc[0]["data_name"] == "0000"
     assert result_0000.iloc[0]["sample_name"] == "SampleA"
+    assert result_0000.iloc[0]["total_value"] > 0
 
     result_0001 = pd.read_csv(
         tar_result["0001"]["analysis_result"],
         dtype={"data_name": str, "sample_name": str},
     )
-    assert result_0001.iloc[0]["total_value"] == 200
     assert result_0001.iloc[0]["data_name"] == "0001"
     assert result_0001.iloc[0]["sample_name"] == "SampleB"
+    assert result_0001.iloc[0]["total_value"] > 0
 
     # Verify output structure: {data_name}/images/{image_name}
     assert "images" in tar_result["0000"]
@@ -780,15 +768,98 @@ def test_run_analyze_multi_outputs_tar_with_multiple_targets(
     assert tar_result["0001"]["images"]["plot.png"].getbuffer().nbytes > 0
 
 
-def test_run_analyze_multi_handles_target_failures(monkeypatch, tmp_path: Path):
+def test_run_analyze_multi_handles_target_failures_immediate(monkeypatch, capsys):
     """
     ANALYSISRUN_MODE=analyzemulti で一部のターゲットが失敗した場合、
-    全体が失敗として扱われることを確認する。
+    即座に処理が終了することを確認する。
     """
     monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
+    stdout_buf = BytesIO()
+
+    tar_buf = create_tar_from_dict(
+        {
+            "targets": json.dumps(
+                {"0000": "SampleA", "0001": "SampleB", "0002": "SampleC"}
+            ),
+            "params": Params(threshold=3).model_dump_json(),
+            "image_analysis_results/activity_spots": _load_csv_df(
+                IMAGE_ANALYSIS_RESULT_CSV
+            ),
+        }
+    )
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    call_order = []
+
+    def analyze(args):
+        call_order.append(args.data_name)
+
+        # 2番目のターゲット（0001）で失敗
+        if args.data_name == "0001":
+            raise ValueError(f"Intentional failure for {args.data_name}")
+
+        df = args.image_analysis_results.activity_spots.data
+
+        # 画像を出力
+        fig = plt.figure()
+        plt.plot([0, 1], [0, 1])
+        args.output(fig, "error_plot.png", "png")
+
+        return pd.Series(
+            {
+                "data_name": args.data_name,
+                "sample_name": args.sample_name,
+                "total_value": int(df["Value"].sum()),
+            }
+        )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=analyze)
+
+    # Should exit with error code
+    assert excinfo.value.code == 1
+
+    # エラー発生時点で即座に終了するため、3番目のターゲット（0002）は処理されない
+    assert call_order == ["0000", "0001"]
+
+    # Verify error output in tar
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert "error" in tar_result
+    error_msg = tar_result["error"]
+    # エラーメッセージには、ターゲット名とサンプル名が含まれる
+    assert "0001" in error_msg
+    assert "SampleB" in error_msg
+    assert "解析処理中にエラーが発生しました" in error_msg
+
+    # 元の例外メッセージはstderrに出力される
+    captured = capsys.readouterr()
+    assert "Intentional failure for 0001" in captured.err
+
+    # エラー前に生成された画像（0000のもの）は含まれるべき
+    assert "0000" in tar_result
+    assert "images" in tar_result["0000"]
+    assert "error_plot.png" in tar_result["0000"]["images"]
+
+
+def test_run_analyze_multi_with_print_statements_doesnt_corrupt_output(
+    monkeypatch, capsys
+):
+    """
+    analyzemulti モード中にprint文があっても標準出力が破損しないことを確認する。
+
+    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
+    print文が標準エラー出力に向かうことを確認する。
+    """
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
     stdout_buf = BytesIO()
 
     tar_buf = create_tar_from_dict(
@@ -801,39 +872,6 @@ def test_run_analyze_multi_handles_target_failures(monkeypatch, tmp_path: Path):
         }
     )
 
-    # Setup entrypoint mock
-    entrypoint = tmp_path / "entry.py"
-    entrypoint.write_text("# dummy\n")
-
-    import analysisrun.pipeable as pipeable
-
-    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
-
-    # Mock subprocess.run to simulate failure for one target
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
-        data_name = tar_in["data_name"]
-
-        if data_name == "0001":
-            # Simulate failure
-            error_tar = create_tar_from_dict({"error": "Target 0001 failed"})
-            return SimpleNamespace(
-                returncode=1, stdout=error_tar.getvalue(), stderr=b""
-            )
-
-        # Success for 0000
-        series_df = pd.DataFrame(
-            {"data_name": [data_name], "sample_name": ["SampleA"], "total_value": [100]}
-        )
-        series_buf = BytesIO()
-        series_df.to_csv(series_buf, index=False)
-        series_buf.seek(0)
-
-        result_tar = create_tar_from_dict({"analysis_result": series_buf})
-        return SimpleNamespace(returncode=0, stdout=result_tar.getvalue(), stderr=b"")
-
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
-
     ctx = read_context(
         Params,
         ImageResults,
@@ -841,15 +879,32 @@ def test_run_analyze_multi_handles_target_failures(monkeypatch, tmp_path: Path):
         stdout=stdout_buf,
     )
 
+    def analyze(args):
+        # ユーザーコードにprint文が含まれているケース
+        print(f"Debug: Analyzing {args.data_name}")
+        df = args.image_analysis_results.activity_spots.data
+        print(f"Debug: Processing {len(df)} rows")
+        total = int(df["Value"].sum())
+        print(f"Debug: Total value is {total}")
+        return pd.Series({"total_value": total})
+
     with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis(analyze=lambda args: pd.Series({"unused": 0}))
+        ctx.run_analysis(analyze=analyze)
 
-    # Should exit with error code
-    assert excinfo.value.code == 1
+    assert excinfo.value.code == 0
 
-    # Verify error output in tar (summary message only)
+    # 標準出力はtarフォーマットとして正常に読み込めるべき
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    assert "error" in tar_result
-    error_msg = tar_result["error"]
-    assert "複数ターゲットの解析中に" in error_msg
-    assert "1件のエラーが発生しました" in error_msg
+
+    # 結果は正しく取得できるべき
+    assert "0000" in tar_result
+    assert "0001" in tar_result
+    assert "analysis_result" in tar_result["0000"]
+    assert "analysis_result" in tar_result["0001"]
+
+    # print文の出力は標準エラー出力に出ているべき
+    captured = capsys.readouterr()
+    assert "Debug: Analyzing 0000" in captured.err
+    assert "Debug: Analyzing 0001" in captured.err
+    assert "Debug: Processing" in captured.err
+    assert "Debug: Total value is" in captured.err

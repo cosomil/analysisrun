@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 import tarfile
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -353,7 +352,7 @@ class AnalysisContext[
                 case _AnalysisState():
                     return self._run_analysis_only(analyze, stdout, stderr)
                 case _AnalyzeMultiState():
-                    return self._run_analyze_multi(stdout, stderr)
+                    return self._run_analyze_multi(analyze, stdout, stderr)
                 case _PostprocessState():
                     return self._run_postprocess_only(postprocess, stdout, stderr)
                 case _SequentialState():
@@ -461,14 +460,15 @@ class AnalysisContext[
 
     def _run_analyze_multi(
         self,
+        analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
         """
-        複数ターゲットの解析を並列実行し、結果をtar形式で標準出力に出力する。
+        複数ターゲットの解析をプロセス内でシーケンシャルに実行し、結果をtar形式で標準出力に出力する。
 
-        各ターゲットは独立したサブプロセスで ANALYSISRUN_MODE=analyze として実行される。
-        いずれかのターゲットでエラーが発生した場合、全体を失敗として扱う。
+        各ターゲットは同一プロセス内で順次処理される。
+        いずれかのターゲットでエラーが発生した場合、即座に全体を失敗として扱う。
 
         出力フォーマット:
             {
@@ -486,140 +486,62 @@ class AnalysisContext[
         parsed: AnalyzeMultiInputModel = state.parsed_input
         field_numbers = state.field_numbers
 
-        # Get entrypoint for subprocess execution
-        entrypoint = get_entrypoint()
-        assert entrypoint is not None, "Entry point not found for subprocess execution"
+        # Get specs for cleansing
+        specs = _get_image_analysis_specs(self.image_analysis_results)
 
-        # Serialize params once for all targets
-        params_payload = parsed.params.model_dump_json()
+        # TARストリームを開く（パイプモード: w|）
+        with tarfile.open(fileobj=stdout, mode="w|") as tar:
+            # 各ターゲットをシーケンシャルに処理
+            for data_name, sample_name in parsed.targets.items():
+                # このターゲット専用のOutput（画像を{data_name}/images/配下に書き込む）
+                output = _TarStreamingOutput(tar, prefix=f"{data_name}/images")
 
-        # Convert image_analysis_results to dict of dataframes
-        image_analysis_results_dict: dict[str, pd.DataFrame] = {}
-        for name in type(parsed.image_analysis_results).model_fields:
-            virtual_file = getattr(parsed.image_analysis_results, name)
-            df = _deserialize_dataframe_with_leading_zeroes(virtual_file.unwrap())
-            image_analysis_results_dict[name] = df
-
-        # データ（レーン）ごとに画像解析データを分割する
-        target_data = list(parsed.targets.keys())
-        lane_data_by_dataset: dict[str, dict[str, pd.DataFrame]] = {}
-        for name, df in image_analysis_results_dict.items():
-            lane_scanner = Lanes(
-                whole_data=CleansedData(_data=df.copy()),
-                target_data=target_data,
-                field_numbers=field_numbers,
-            )
-            lane_data_by_dataset[name] = {
-                fields.data_name: fields.data.drop(
-                    columns=["ImageAnalysisMethod", "Data"], errors="ignore"
-                )
-                for fields in lane_scanner
-            }
-
-        # Helper function to build tar input for single target
-        def _build_tar_buffer(data_name: str, sample_name: str) -> BytesIO:
-            image_results: dict[str, pd.DataFrame] = {}
-            for name, per_lane in lane_data_by_dataset.items():
-                lane_df = per_lane.get(data_name)
-                if lane_df is None:
-                    lane_df = image_analysis_results_dict[name].iloc[0:0]
-                image_results[name] = lane_df
-            return _build_analysis_tar_buffer(
-                params_payload,
-                data_name,
-                sample_name,
-                image_results,
-            )
-
-        # Helper function to run single target in subprocess
-        def _run_single_target(
-            item: tuple[str, str],
-        ) -> tuple[str, pd.Series | None, dict[str, BytesIO], Exception | None]:
-            """
-            単一ターゲットをサブプロセスで実行する。
-
-            Returns
-            -------
-            tuple
-                (data_name, series, images, error)
-            """
-            data_name, sample_name = item
-
-            try:
-                tar_buf = _build_tar_buffer(data_name, sample_name)
-                proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyze")
-
-                if proc.returncode != 0:
-                    error, images, err_out = _extract_error_and_images_from_process(
-                        proc
+                try:
+                    # データのクレンジングとレーン構築
+                    cleansed_data = _load_and_cleanse_image_results(
+                        parsed.image_analysis_results,
+                        specs,
                     )
-                    if error is None:
-                        error = Exception(err_out if err_out else "Unknown error")
-                    return (data_name, None, images, error)
+                    lanes = _build_fields_namedtuple(
+                        self.image_analysis_results,
+                        cleansed_data,
+                        data_name,
+                        field_numbers,
+                    )
 
-                # Success case - parse output tar
-                tar_result = read_tar_as_dict(BytesIO(proc.stdout))
+                    # 解析実行（画像は生成されるたびにTARに書き込まれる）
+                    with redirect_stdout_to_stderr(stderr):
+                        series = analyze(
+                            AnalyzeArgs(
+                                self.params,
+                                data_name,
+                                sample_name,
+                                lanes,
+                                output,
+                            )
+                        )
+                    _ensure_result_annotations(series, data_name, sample_name)
+                except Exception as exc:
+                    exit_with_error_streaming(
+                        ExitCodes.PROCESSING_ERROR,
+                        f"ターゲット {data_name} ({sample_name}) の解析処理中にエラーが発生しました。",
+                        tar,
+                        stderr,
+                        exc,
+                    )
 
-                # Extract analysis result
-                series = None
-                if "analysis_result" in tar_result:
-                    series = _deserialize_series(tar_result["analysis_result"])
+                # 解析結果をTARに追加（画像の後）
+                result_csv = _serialize_series(series)
+                result_csv.seek(0)
+                result_data = result_csv.read()
 
-                # Extract images
-                images = _extract_images_from_tar_dict(tar_result)
+                tar_info = tarfile.TarInfo(name=f"{data_name}/analysis_result")
+                tar_info.size = len(result_data)
+                tar_info.pax_headers = {"is_file": "true"}
+                tar.addfile(tar_info, BytesIO(result_data))
 
-                return (data_name, series, images, None)
-
-            except Exception as e:
-                return (data_name, None, {}, e)
-
-        # Execute all targets in parallel using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-            results = list(executor.map(_run_single_target, parsed.targets.items()))
-
-        # Check for errors
-        errors: list[tuple[str, Exception]] = []
-        for data_name, series, images, error in results:
-            if error is not None:
-                errors.append((data_name, error))
-
-        # If any errors occurred, aggregate and exit with error
-        if errors:
-            error_messages = []
-            for data_name, error in errors:
-                error_messages.append(f"\n{'=' * 60}")
-                error_messages.append(f"Target: {data_name}")
-                error_messages.append(f"{'=' * 60}")
-                error_messages.append(str(error))
-
-            aggregated_error = Exception("\n".join(error_messages))
-
-            exit_with_error(
-                ExitCodes.PROCESSING_ERROR,
-                f"複数ターゲットの解析中に{len(errors)}件のエラーが発生しました。",
-                stdout,
-                stderr,
-                aggregated_error,
-            )
-
-        # Build output tar with all results
-        tar_data: dict[str, Any] = {}
-
-        # Add analysis results and images for each target
-        for data_name, series, images, error in results:
-            if series is not None:
-                # Analysis result for this target
-                tar_data[f"{data_name}/analysis_result"] = _serialize_series(series)
-
-                # Images for this target
-                for image_name, image_buf in images.items():
-                    tar_data[f"{data_name}/images/{image_name}"] = image_buf
-
-        # Write output and exit
-        tar_buf = create_tar_from_dict(tar_data)
-        stdout.write(tar_buf.getvalue())
+        # 正常終了: TAR自動クローズ済み
         stdout.flush()
-
         sys.exit(0)
 
     def _run_postprocess_only(
@@ -1095,8 +1017,6 @@ class _TarStreamingOutput(Output):
     def __init__(self, tar: tarfile.TarFile, prefix: str = "images"):
         self.tar = tar
         self.prefix = prefix
-        # スレッドセーフ対応
-        self.lock = threading.Lock()
 
     def __call__(self, fig, name: str, image_type: str, **kwargs) -> None:
         # 画像をバッファに保存
@@ -1106,11 +1026,10 @@ class _TarStreamingOutput(Output):
         image_data = buf.read()
 
         # TARエントリとして即座に書き込み
-        with self.lock:
-            tar_info = tarfile.TarInfo(name=f"{self.prefix}/{name}")
-            tar_info.size = len(image_data)
-            tar_info.pax_headers = {"is_file": "true", "image_type": image_type}
-            self.tar.addfile(tar_info, BytesIO(image_data))
+        tar_info = tarfile.TarInfo(name=f"{self.prefix}/{name}")
+        tar_info.size = len(image_data)
+        tar_info.pax_headers = {"is_file": "true", "image_type": image_type}
+        self.tar.addfile(tar_info, BytesIO(image_data))
 
         # メモリ解放
         fig.clear()
