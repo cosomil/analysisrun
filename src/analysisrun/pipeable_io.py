@@ -209,12 +209,12 @@ class AnalysisInputModel[
     }
 
 
-class AnalyzeMultiInputModel[
+class AnalyzeSeqInputModel[
     Params: BaseModel,
     ImageAnalysisResultsInput: BaseModel,
 ](BaseModel):
     """
-    分散実行時に複数ターゲットの解析を実行する際の入力データモデル
+    分散実行時に複数ターゲットの解析をシーケンシャルに実行する際の入力データモデル
 
     `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
 

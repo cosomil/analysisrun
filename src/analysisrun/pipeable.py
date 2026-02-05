@@ -31,7 +31,7 @@ from analysisrun.helper import read_dict
 from analysisrun.interactive import VirtualFile, scan_model_input
 from analysisrun.pipeable_io import (
     AnalysisInputModel,
-    AnalyzeMultiInputModel,
+    AnalyzeSeqInputModel,
     ExitCodes,
     PostprocessInputModel,
     exit_with_error,
@@ -251,14 +251,14 @@ class _AnalysisState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState
 
 
 @dataclass
-class _AnalyzeMultiState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
+class _AnalyzeSeqState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
     """
-    複数ターゲットの解析モード用のState
+    複数ターゲットのシーケンシャル解析モード用のState
 
-    ANALYSISRUN_MODE=analyzemulti で使用される。
+    ANALYSISRUN_MODE=analyzeseq で使用される。
     """
 
-    parsed_input: AnalyzeMultiInputModel[ParamsT, ImageInputModelT]
+    parsed_input: AnalyzeSeqInputModel[ParamsT, ImageInputModelT]
     field_numbers: list[int]
 
 
@@ -298,7 +298,7 @@ class AnalysisContext[
     output: Output
     state: (
         _AnalysisState[Params, BaseModel]
-        | _AnalyzeMultiState[Params, BaseModel]
+        | _AnalyzeSeqState[Params, BaseModel]
         | _PostprocessState[Params]
         | _SequentialState
         | _ParallelState
@@ -309,7 +309,7 @@ class AnalysisContext[
         self,
     ) -> Literal[
         "analysis-only",
-        "analyze-multi",
+        "analyze-seq",
         "postprocess-only",
         "sequential",
         "parallel-entrypoint",
@@ -317,8 +317,8 @@ class AnalysisContext[
         match self.state:
             case _AnalysisState():
                 return "analysis-only"
-            case _AnalyzeMultiState():
-                return "analyze-multi"
+            case _AnalyzeSeqState():
+                return "analyze-seq"
             case _PostprocessState():
                 return "postprocess-only"
             case _SequentialState():
@@ -351,8 +351,8 @@ class AnalysisContext[
             match self.state:
                 case _AnalysisState():
                     return self._run_analysis_only(analyze, stdout, stderr)
-                case _AnalyzeMultiState():
-                    return self._run_analyze_multi(analyze, stdout, stderr)
+                case _AnalyzeSeqState():
+                    return self._run_analyze_seq(analyze, stdout, stderr)
                 case _PostprocessState():
                     return self._run_postprocess_only(postprocess, stdout, stderr)
                 case _SequentialState():
@@ -458,7 +458,7 @@ class AnalysisContext[
         stdout.flush()
         sys.exit(0)
 
-    def _run_analyze_multi(
+    def _run_analyze_seq(
         self,
         analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
         stdout: IO[bytes],
@@ -481,9 +481,9 @@ class AnalysisContext[
         SystemExit
             処理完了時（成功/失敗問わず）
         """
-        assert isinstance(self.state, _AnalyzeMultiState)
+        assert isinstance(self.state, _AnalyzeSeqState)
         state = self.state
-        parsed: AnalyzeMultiInputModel = state.parsed_input
+        parsed: AnalyzeSeqInputModel = state.parsed_input
         field_numbers = state.field_numbers
 
         # Get specs for cleansing
@@ -821,7 +821,7 @@ def read_context[
     output_impl: Output = _NullOutput()
     ctx_state: (
         _AnalysisState[Params, BaseModel]
-        | _AnalyzeMultiState[Params, BaseModel]
+        | _AnalyzeSeqState[Params, BaseModel]
         | _PostprocessState[Params]
         | _SequentialState
         | _ParallelState
@@ -867,17 +867,17 @@ def read_context[
             stderr=_stderr,
             parsed_input=parsed,
         )
-    elif mode == "analyzemulti":
-        # 複数ターゲットの解析モード
+    elif mode == "analyzeseq":
+        # 複数ターゲットのシーケンシャル解析モード
         try:
             tar_dict = read_tar_as_dict(_stdin)
             tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
             tar_dict["targets"] = _maybe_load_json(tar_dict.get("targets"))
 
-            AnalyzeMultiInput = AnalyzeMultiInputModel[
+            AnalyzeSeqInput = AnalyzeSeqInputModel[
                 params, image_analysis_results_input_model
             ]
-            parsed = AnalyzeMultiInput(**tar_dict)
+            parsed = AnalyzeSeqInput(**tar_dict)
             params_value = parsed.params
         except Exception as exc:
             exit_with_error(
@@ -887,7 +887,7 @@ def read_context[
                 _stderr,
                 exc,
             )
-        ctx_state = _AnalyzeMultiState(
+        ctx_state = _AnalyzeSeqState(
             stdout=_stdout,
             stderr=_stderr,
             parsed_input=parsed,

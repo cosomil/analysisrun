@@ -672,14 +672,14 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
     assert (out_dir / "error_plot.png").exists()
 
 
-def test_run_analyze_multi_outputs_tar_with_multiple_targets_sequential(
+def test_run_analyze_seq_outputs_tar_with_multiple_targets_sequential(
     monkeypatch,
 ):
     """
-    ANALYSISRUN_MODE=analyzemulti で複数ターゲットの解析がシーケンシャルに実行され、
+    ANALYSISRUN_MODE=analyzeseq で複数ターゲットの解析がシーケンシャルに実行され、
     正しいフォーマットで tar 出力されることを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzeseq")
     stdout_buf = BytesIO()
 
     tar_buf = create_tar_from_dict(
@@ -768,12 +768,12 @@ def test_run_analyze_multi_outputs_tar_with_multiple_targets_sequential(
     assert tar_result["0001"]["images"]["plot.png"].getbuffer().nbytes > 0
 
 
-def test_run_analyze_multi_handles_target_failures_immediate(monkeypatch, capsys):
+def test_run_analyze_seq_handles_target_failures_immediate(monkeypatch, capsys):
     """
-    ANALYSISRUN_MODE=analyzemulti で一部のターゲットが失敗した場合、
+    ANALYSISRUN_MODE=analyzeseq で一部のターゲットが失敗した場合、
     即座に処理が終了することを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzeseq")
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
@@ -850,16 +850,16 @@ def test_run_analyze_multi_handles_target_failures_immediate(monkeypatch, capsys
     assert "error_plot.png" in tar_result["0000"]["images"]
 
 
-def test_run_analyze_multi_with_print_statements_doesnt_corrupt_output(
+def test_run_analyze_seq_with_print_statements_doesnt_corrupt_output(
     monkeypatch, capsys
 ):
     """
-    analyzemulti モード中にprint文があっても標準出力が破損しないことを確認する。
+    analyzeseq モード中にprint文があっても標準出力が破損しないことを確認する。
 
     print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
     print文が標準エラー出力に向かうことを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzemulti")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzeseq")
     stdout_buf = BytesIO()
 
     tar_buf = create_tar_from_dict(
