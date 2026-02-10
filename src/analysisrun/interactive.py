@@ -284,7 +284,7 @@ class FilePath(str):
         def validate(v):
             if not isinstance(v, str):
                 return v
-            if v.startswith("'") and v.endswith("'"):
+            if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
                 v = v[1:-1]
             p = Path(v)
             if not p.exists():
@@ -309,7 +309,7 @@ class DirectoryPath(str):
         def validate(v):
             if not isinstance(v, str):
                 return v
-            if v.startswith("'") and v.endswith("'"):
+            if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
                 v = v[1:-1]
             p = Path(v)
             if not p.exists():
@@ -359,7 +359,7 @@ class VirtualFile(Path):
         def validate(v):
             if isinstance(v, (str, Path)):
                 if isinstance(v, str):
-                    if v.startswith("'") and v.endswith("'"):
+                    if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
                         v = v[1:-1]
                     v = Path(v)
                 if not v.exists():
