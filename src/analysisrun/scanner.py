@@ -89,8 +89,13 @@ class Lanes:
 
         data = whole_data._data
         split_data = data["Filename"].str.split("_000_", expand=True)
-        data["ImageAnalysisMethod"] = split_data[0]
-        data["Data"] = split_data[1].str.split(".", expand=True)[0]
+        # データが空の場合、以下の列の値を""にする
+        if len(data) == 0:
+            data["ImageAnalysisMethod"] = ""
+            data["Data"] = ""
+        else:
+            data["ImageAnalysisMethod"] = split_data[0]
+            data["Data"] = split_data[1].str.split(".", expand=True)[0]
 
         self.whole_data = data
         self.target_data = target_data

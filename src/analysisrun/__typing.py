@@ -1,5 +1,7 @@
+from pathlib import Path
 from typing import (
     Any,
+    BinaryIO,
     Iterator,
     Protocol,
     SupportsIndex,
@@ -22,3 +24,6 @@ class NamedTupleLike[E](Protocol):
     @overload
     def __getitem__(self, index: slice, /) -> tuple[E, ...]: ...
     def _asdict(self) -> dict[str, Any]: ...
+
+
+VirtualFileLike = str | Path | BinaryIO

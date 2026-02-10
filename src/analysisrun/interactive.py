@@ -343,6 +343,7 @@ class VirtualFile(Path):
             super().__init__(v)
         elif isinstance(v, BytesIO):
             super().__init__(Path(getcwd()) / "virtual-file")
+            self._buffer = v
 
             # io.BytesIOが与えられた場合のみ、FileLikeオブジェクトとして振る舞うためのメソッドを追加
             def read(self: VirtualFile | None = None) -> bytes:
@@ -353,6 +354,14 @@ class VirtualFile(Path):
 
             self.read = read
             self.__iter__ = iter
+
+    def unwrap(self) -> BytesIO | Path:
+        """
+        VirtualFileが内部的に保持しているio.BytesIOオブジェクトまたはPathオブジェクトを返します。
+        """
+        if hasattr(self, "_buffer"):
+            return self._buffer
+        return self
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):

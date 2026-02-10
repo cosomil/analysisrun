@@ -1,0 +1,3 @@
+Lane,NumFields,PointsPerField,PolyDegree,Repeats,Tau,Ok,data_name,sample_name,Postprocessed
+0000,12,200000,512,2,7,True,0000,SampleA,True
+0001,12,200000,512,2,7,True,0001,SampleB,True

@@ -29,6 +29,10 @@ def get_interactivity():
     対話的な実行環境である場合、その環境を識別する"notebook"または"terminal"を返す。
     """
 
+    forced = os.getenv("ANALYSISRUN_INTERACTIVITY")
+    if forced in ("notebook", "terminal"):
+        return forced
+
     if is_notebook_env():
         return "notebook"
     elif sys.stdin.isatty():
