@@ -52,6 +52,16 @@ class Test_VirtualFile:
         # ファイルを読み込むことができる
         assert_readable_as_csv(out.target)
 
+    def test_from_double_quoted_str(self):
+        path = Path(__file__).parent / "testdata" / "samples.csv"
+        _in: dict[str, Any] = {"target": f'"{path}"'}
+        out = Input(**_in)
+
+        # ディレクトリを取得できる
+        assert out.target.parent == (Path(__file__).parent / "testdata")
+        # ファイルを読み込むことができる
+        assert_readable_as_csv(out.target)
+
     def test_from_BytesIO(self):
         with open(Path(__file__).parent / "testdata" / "samples.csv", "rb") as f:
             content = f.read()
