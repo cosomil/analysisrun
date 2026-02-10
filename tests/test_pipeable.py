@@ -510,12 +510,12 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
     def fake_run(cmd, *, input, stdout, stderr, env):
         called["count"] += 1
         assert cmd == [sys.executable, str(entrypoint)]
-        assert env.get("ANALYSISRUN_MODE") == "analyze"
+        assert env.get("ANALYSISRUN_MODE") == "analyzeseq"
 
-        # 入力 tar の基本構造（data_name/sample_name/params）が入っていることだけ確認
+        # 入力 tar の基本構造（targets/params）が入っていることだけ確認
         tar_in = read_tar_as_dict(BytesIO(input))
-        assert tar_in["data_name"] == "0000"
-        assert tar_in["sample_name"] == "SampleA"
+        targets = json.loads(tar_in["targets"])
+        assert targets == {"0000": "SampleA"}
         assert "params" in tar_in
         assert "image_analysis_results" in tar_in
         activity_spots = tar_in["image_analysis_results"]["activity_spots"]
@@ -527,8 +527,8 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
         series_csv = b"total_value\n1\n"
         tar_out = create_tar_from_dict(
             {
-                "analysis_result": BytesIO(series_csv),
-                "images/plot.png": BytesIO(b"fake-image"),
+                "0000/analysis_result": BytesIO(series_csv),
+                "0000/images/plot.png": BytesIO(b"fake-image"),
             }
         )
         return SimpleNamespace(returncode=0, stdout=tar_out.getvalue(), stderr=b"")
@@ -548,6 +548,103 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
     assert list(df["data_name"]) == ["0000"]
     assert list(df["sample_name"]) == ["SampleA"]
     assert (out_dir / "plot.png").exists()
+
+
+def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, "terminal")
+
+    import analysisrun.pipeable as pipeable
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+    monkeypatch.setattr(pipeable.os, "cpu_count", lambda: 2)
+
+    samples_csv = _write_samples_csv(
+        tmp_path,
+        [
+            ("0000", "SampleA"),
+            ("0001", "SampleB"),
+            ("0002", "SampleC"),
+            ("0003", "SampleD"),
+            ("0004", "SampleE"),
+        ],
+    )
+    manual_input = ManualInput(
+        params=Params(threshold=1),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=samples_csv,
+    )
+
+    expected_rows = len(pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV))
+    calls: list[list[tuple[str, str]]] = []
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        assert cmd == [sys.executable, str(entrypoint)]
+        assert env.get("ANALYSISRUN_MODE") == "analyzeseq"
+
+        tar_in = read_tar_as_dict(BytesIO(input))
+        targets = json.loads(tar_in["targets"])
+        target_pairs = list(targets.items())
+        calls.append(target_pairs)
+
+        activity_spots = tar_in["image_analysis_results"]["activity_spots"]
+        assert isinstance(activity_spots, BytesIO)
+        restored_df = pickle.loads(activity_spots.getvalue())
+        assert isinstance(restored_df, pd.DataFrame)
+        assert len(restored_df) == expected_rows
+
+        out: dict[str, BytesIO] = {}
+        for data_name, sample_name in target_pairs:
+            out[f"{data_name}/analysis_result"] = _dump_csv(
+                pd.DataFrame(
+                    [
+                        {
+                            "data_name": data_name,
+                            "sample_name": sample_name,
+                            "total_value": 1,
+                        }
+                    ]
+                )
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=create_tar_from_dict(out).getvalue(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+        output_dir=tmp_path / "out",
+    )
+
+    result_df = ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+
+    assert len(calls) == 2
+    calls_sorted = sorted(calls, key=lambda x: x[0][0])
+    assert calls_sorted == [
+        [("0000", "SampleA"), ("0001", "SampleB"), ("0002", "SampleC")],
+        [("0003", "SampleD"), ("0004", "SampleE")],
+    ]
+
+    got = result_df.sort_values("data_name").reset_index(drop=True)
+    assert list(got["data_name"]) == ["0000", "0001", "0002", "0003", "0004"]
+    assert list(got["sample_name"]) == [
+        "SampleA",
+        "SampleB",
+        "SampleC",
+        "SampleD",
+        "SampleE",
+    ]
+    assert list(got["total_value"]) == [1, 1, 1, 1, 1]
 
 
 def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
@@ -652,15 +749,30 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
             "images/error_plot.png": BytesIO(b"error-image"),
         }
     )
-    series_csv = b"total_value\n2\n"
-    ok_tar = create_tar_from_dict({"analysis_result": BytesIO(series_csv)})
 
     def fake_run(cmd, *, input, stdout, stderr, env):
         tar_in = read_tar_as_dict(BytesIO(input))
-        if tar_in["data_name"] == "0000":
+        targets = json.loads(tar_in["targets"])
+        if "0000" in targets:
             return SimpleNamespace(
                 returncode=1, stdout=error_tar.getvalue(), stderr=b""
             )
+        data_name, sample_name = next(iter(targets.items()))
+        ok_tar = create_tar_from_dict(
+            {
+                f"{data_name}/analysis_result": _dump_csv(
+                    pd.DataFrame(
+                        [
+                            {
+                                "data_name": data_name,
+                                "sample_name": sample_name,
+                                "total_value": 2,
+                            }
+                        ]
+                    )
+                )
+            }
+        )
         return SimpleNamespace(returncode=0, stdout=ok_tar.getvalue(), stderr=b"")
 
     monkeypatch.setattr(pipeable.subprocess, "run", fake_run)

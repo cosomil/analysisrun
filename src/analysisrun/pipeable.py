@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import re
 import subprocess
 import sys
 import tarfile
@@ -337,9 +338,10 @@ class AnalysisContext[
         read_contextで読み込んだコンテキストに基づいて数値解析を実行する。
 
         - mode="analysis-only": 1レーンの解析だけを行い、結果をまとめたtarデータを標準出力に書き出す。その後exitする。
+        - mode="analyze-seq": 複数レーンの解析をシーケンシャルに行い、各レーンの解析結果をまとめたtarデータを標準出力に書き出す。その後exitする。
         - mode="postprocess-only": 各レーンの解析結果を結合し、後処理を行った結果をtarデータとして標準出力に書き出す。その後exitする。
         - mode="sequential": multiprocessingを活用できないJupyter notebook環境において、全レーンをシーケンシャルに処理し、DataFrameを返す。
-        - mode="parallel-entrypoint": entrypointを並列起動し、各レーンのanalysis-onlyの結果を集約、後処理を加えてDataFrameを返す。
+        - mode="parallel-entrypoint": entrypointを並列起動し、各プロセスで複数レーンをanalyzeseq実行した結果を集約、後処理を加えてDataFrameを返す。
 
         :param analyze: レーンごとに実行される解析処理の実装。
         :param postprocess: 後処理の実装（任意）。全レーンの解析結果をもとにさらに判定を加えたい場合に使用する。
@@ -642,104 +644,88 @@ class AnalysisContext[
         params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # データ名の重複排除
-        target_data: list[str] = []
-        seen_data: set[str] = set()
-        for data_name, _ in sample_pairs:
-            if data_name not in seen_data:
-                seen_data.add(data_name)
-                target_data.append(data_name)
+        core_count = os.cpu_count() or 1
+        process_count = min(len(sample_pairs), max(core_count, 1))
+        target_chunks = _split_evenly_in_order(sample_pairs, process_count)
 
-        # データ（レーン）ごとに画像解析データを分割する
-        lane_data_by_dataset: dict[str, dict[str, pd.DataFrame]] = {}
-        for name, df in raw_data.items():
-            lane_scanner = Lanes(
-                whole_data=CleansedData(_data=df.copy()),
-                target_data=target_data,
-                field_numbers=state.field_numbers,
-            )
-            lane_data_by_dataset[name] = {
-                fields.data_name: fields.data.drop(
-                    columns=["ImageAnalysisMethod", "Data"], errors="ignore"
-                )
-                for fields in lane_scanner
-            }
+        def _run_chunk(
+            targets: list[tuple[str, str]],
+        ) -> tuple[list[pd.Series], Optional[tuple[str, str, str, str]]]:
+            tar_buf = _build_analyze_seq_tar_buffer(params_payload, targets, raw_data)
+            proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyzeseq")
 
-        def _build_tar_buffer(data_name: str, sample_name: str) -> BytesIO:
-            image_results: dict[str, pd.DataFrame] = {}
-            for name, per_lane in lane_data_by_dataset.items():
-                lane_df = per_lane.get(data_name)
-                if lane_df is None:
-                    lane_df = raw_data[name].iloc[0:0]
-                image_results[name] = lane_df
-            return _build_analysis_tar_buffer(
-                params_payload,
-                data_name,
-                sample_name,
-                image_results,
-            )
-
-        def _run_lane(
-            args: tuple[str, str],
-        ) -> tuple[str, str, Optional[pd.Series], Optional[tuple[str, str]]]:
-            data_name, sample_name = args
-            tar_buf = _build_tar_buffer(data_name, sample_name)
-            # entrypoint 側は ANALYSISRUN_MODE を見てanalysis-onlyモードで動作する。
-            proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyze")
             if proc.returncode != 0:
                 err, images, err_out = _extract_error_and_images_from_process(proc)
+                if images:
+                    _save_images_to_dir(images, output_dir)
                 err_msg = (
                     str(err) if err is not None else "不明なエラーが発生しました。"
                 )
-                if images:
-                    _save_images_to_dir(images, output_dir)
-                return data_name, sample_name, None, (err_msg, err_out)
+                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
+                return [], (failed_data, failed_sample, err_msg, err_out)
 
             try:
                 tar_result = read_tar_as_dict(BytesIO(proc.stdout))
             except Exception as exc:
+                data_name, sample_name = targets[0]
                 return (
-                    data_name,
-                    sample_name,
-                    None,
-                    (f"{data_name}の解析結果の読み込みに失敗しました", str(exc)),
+                    [],
+                    (
+                        data_name,
+                        sample_name,
+                        f"{data_name}の解析結果の読み込みに失敗しました",
+                        str(exc),
+                    ),
                 )
-
-            if "error" in tar_result:
-                images = _extract_images_from_tar_dict(tar_result)
-                _save_images_to_dir(images, output_dir)
-                return (
-                    data_name,
-                    sample_name,
-                    None,
-                    (str(tar_result["error"]), ""),
-                )
-
-            series_buf = tar_result.get("analysis_result")
-            if not isinstance(series_buf, BytesIO):
-                return (
-                    data_name,
-                    sample_name,
-                    None,
-                    (f"{data_name}の解析結果の形式が不正です。", ""),
-                )
-            series = _deserialize_series(series_buf)
-            _ensure_result_annotations(series, data_name, sample_name)
 
             images = _extract_images_from_tar_dict(tar_result)
-            _save_images_to_dir(images, output_dir)
-            return data_name, sample_name, series, None
+            if images:
+                _save_images_to_dir(images, output_dir)
 
-        with ThreadPoolExecutor() as executor:
-            lane_results = list(executor.map(_run_lane, sample_pairs))
+            if "error" in tar_result:
+                err_msg = str(tar_result["error"])
+                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
+                return [], (failed_data, failed_sample, err_msg, "")
+
+            chunk_results: list[pd.Series] = []
+            for data_name, sample_name in targets:
+                lane_result = tar_result.get(data_name)
+                if not isinstance(lane_result, dict):
+                    return (
+                        [],
+                        (
+                            data_name,
+                            sample_name,
+                            f"{data_name}の解析結果の形式が不正です。",
+                            "",
+                        ),
+                    )
+                series_buf = lane_result.get("analysis_result")
+                if not isinstance(series_buf, BytesIO):
+                    return (
+                        [],
+                        (
+                            data_name,
+                            sample_name,
+                            f"{data_name}の解析結果の形式が不正です。",
+                            "",
+                        ),
+                    )
+                series = _deserialize_series(series_buf)
+                _ensure_result_annotations(series, data_name, sample_name)
+                chunk_results.append(series)
+            return chunk_results, None
+
+        with ThreadPoolExecutor(max_workers=process_count) as executor:
+            chunk_results = list(executor.map(_run_chunk, target_chunks))
 
         errors: list[tuple[str, str, str, str]] = []
         results: list[pd.Series] = []
-        for data_name, sample_name, series, err_msg in lane_results:
-            if err_msg:
-                errors.append((data_name, sample_name, err_msg[0], err_msg[1]))
-            elif series is not None:
-                results.append(series)
+        for series_list, err in chunk_results:
+            if err:
+                errors.append(err)
+            else:
+                results.extend(series_list)
 
         if errors:
             lanes = []
@@ -1174,7 +1160,9 @@ def _deserialize_dataframe_pickle(value: Any) -> pd.DataFrame:
         ) from exc
 
     if not isinstance(loaded, pd.DataFrame):
-        raise RuntimeError("画像解析結果データはDataFrameのpickleデータを指定してください。")
+        raise RuntimeError(
+            "画像解析結果データはDataFrameのpickleデータを指定してください。"
+        )
     return loaded
 
 
@@ -1226,30 +1214,69 @@ def _derive_output_dir(image_analysis_results_model: BaseModel) -> Path:
 
 
 def _extract_images_from_tar_dict(tar_dict: dict[str, Any]) -> dict[str, BytesIO]:
-    images_entry = tar_dict.get("images")
-    if isinstance(images_entry, dict):
-        return {
-            name: value
-            for name, value in images_entry.items()
-            if isinstance(value, BytesIO)
-        }
-    return {}
+    images: dict[str, BytesIO] = {}
+
+    def _collect(node: Any, prefix: str = "") -> None:
+        if not isinstance(node, dict):
+            return
+        images_entry = node.get("images")
+        if isinstance(images_entry, dict):
+            for name, value in images_entry.items():
+                if isinstance(value, BytesIO):
+                    images[name] = value
+        for key, value in node.items():
+            if key == "images":
+                continue
+            next_prefix = f"{prefix}/{key}" if prefix else key
+            _collect(value, next_prefix)
+
+    _collect(tar_dict)
+    return images
 
 
-def _build_analysis_tar_buffer(
+def _build_analyze_seq_tar_buffer(
     params_payload: str,
-    data_name: str,
-    sample_name: str,
+    targets: list[tuple[str, str]],
     image_results: dict[str, pd.DataFrame],
 ) -> BytesIO:
+    targets_payload = json.dumps(
+        {data_name: sample_name for data_name, sample_name in targets}
+    )
     payload: dict[str, Any] = {
-        "data_name": data_name,
-        "sample_name": sample_name,
+        "targets": targets_payload,
         "params": params_payload,
     }
     for name, df in image_results.items():
         payload[f"image_analysis_results/{name}"] = _serialize_dataframe_pickle(df)
     return create_tar_from_dict(payload)
+
+
+def _split_evenly_in_order[T](items: list[T], chunks: int) -> list[list[T]]:
+    if chunks <= 0:
+        raise ValueError("chunks must be positive")
+    if not items:
+        return []
+
+    chunk_count = min(chunks, len(items))
+    base, extra = divmod(len(items), chunk_count)
+
+    result: list[list[T]] = []
+    start = 0
+    for idx in range(chunk_count):
+        size = base + (1 if idx < extra else 0)
+        end = start + size
+        result.append(items[start:end])
+        start = end
+    return result
+
+
+def _infer_failed_target(
+    err_msg: str, targets: list[tuple[str, str]]
+) -> tuple[str, str]:
+    match = re.search(r"ターゲット\s+([^\s]+)\s+\(([^)]+)\)", err_msg)
+    if match:
+        return match.group(1), match.group(2)
+    return targets[0]
 
 
 def _serialize_dataframe_pickle(df: pd.DataFrame) -> BytesIO:
