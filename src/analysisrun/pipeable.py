@@ -1,5 +1,6 @@
 import json
 import os
+import pickle
 import subprocess
 import sys
 import tarfile
@@ -94,6 +95,7 @@ class ManualInput[Params: BaseModel]:
 
 
 CleansingFunc = Callable[[pd.DataFrame | CleansedData], CleansedData]
+_ImageResultsSerialization = Literal["csv", "pickle"]
 
 
 @dataclass
@@ -415,6 +417,7 @@ class AnalysisContext[
                 cleansed_data = _load_and_cleanse_image_results(
                     parsed.image_analysis_results,
                     specs,
+                    serialization="pickle",
                 )
                 lanes = _build_fields_namedtuple(
                     self.image_analysis_results,
@@ -501,6 +504,7 @@ class AnalysisContext[
                     cleansed_data = _load_and_cleanse_image_results(
                         parsed.image_analysis_results,
                         specs,
+                        serialization="pickle",
                     )
                     lanes = _build_fields_namedtuple(
                         self.image_analysis_results,
@@ -633,7 +637,8 @@ class AnalysisContext[
         output_dir = state.output_dir
         entrypoint = state.entrypoint
 
-        # サブプロセスへの入力は、標準入力を経由してtarデータで渡される。そのため、paramsはJSONとしてシリアライズする。
+        # サブプロセスへの入力は標準入力経由のtarで渡す。
+        # paramsはJSON、image_analysis_resultsはpickleでシリアライズする。
         params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -946,6 +951,7 @@ def read_context[
 
         raw_data = _load_image_results_raw(
             local_input.image_analysis_results,
+            serialization="csv",
         )
         if mode == "sequential":
             cleansed_data = {
@@ -1057,6 +1063,8 @@ class _NullOutput(Output):
 
 def _load_image_results_raw(
     image_analysis_results_model: BaseModel,
+    *,
+    serialization: _ImageResultsSerialization,
 ) -> dict[str, pd.DataFrame]:
     """
     ImageAnalysisResultsInputから各データをDataFrameとして読み込む。
@@ -1067,7 +1075,10 @@ def _load_image_results_raw(
     raw: dict[str, pd.DataFrame] = {}
     for name in type(image_analysis_results_model).model_fields:
         vfile = getattr(image_analysis_results_model, name)
-        raw[name] = _deserialize_dataframe(vfile.unwrap())
+        if serialization == "csv":
+            raw[name] = _deserialize_dataframe_csv(vfile.unwrap())
+        else:
+            raw[name] = _deserialize_dataframe_pickle(vfile.unwrap())
     return raw
 
 
@@ -1087,10 +1098,13 @@ def _apply_cleansing_pipeline(
 def _load_and_cleanse_image_results(
     image_analysis_results_model: BaseModel,
     specs: dict[str, _ImageAnalysisResultSpec],
+    *,
+    serialization: _ImageResultsSerialization,
 ) -> dict[str, CleansedData]:
     cleansed_data: dict[str, CleansedData] = {}
     raw_data = _load_image_results_raw(
         image_analysis_results_model,
+        serialization=serialization,
     )
     for name, spec in specs.items():
         df = raw_data[name]
@@ -1137,12 +1151,31 @@ def _serialize_dataframe(df: pd.DataFrame) -> BytesIO:
     return buf
 
 
-def _deserialize_dataframe(value: Any) -> pd.DataFrame:
-    """BytesIO/PathからDataFrameを復元する（CSV専用）。"""
-
+def _deserialize_dataframe_csv(value: Any) -> pd.DataFrame:
     if isinstance(value, BytesIO):
         value.seek(0)
     return pd.read_csv(value, dtype=_CSV_DTYPE)
+
+
+def _deserialize_dataframe_pickle(value: Any) -> pd.DataFrame:
+    """BytesIO/PathからDataFrameを復元する（DataFrame pickle専用）。"""
+
+    try:
+        if isinstance(value, Path):
+            loaded = pd.read_pickle(value)
+        elif isinstance(value, BytesIO):
+            value.seek(0)
+            loaded = pickle.load(value)
+        else:
+            loaded = pd.read_pickle(value)
+    except Exception as exc:
+        raise RuntimeError(
+            "画像解析結果データの読み込みに失敗しました。DataFrameのpickleデータを指定してください。"
+        ) from exc
+
+    if not isinstance(loaded, pd.DataFrame):
+        raise RuntimeError("画像解析結果データはDataFrameのpickleデータを指定してください。")
+    return loaded
 
 
 def _deserialize_dataframe_with_leading_zeroes(value: BytesIO) -> pd.DataFrame:
@@ -1215,8 +1248,15 @@ def _build_analysis_tar_buffer(
         "params": params_payload,
     }
     for name, df in image_results.items():
-        payload[f"image_analysis_results/{name}"] = _serialize_dataframe(df)
+        payload[f"image_analysis_results/{name}"] = _serialize_dataframe_pickle(df)
     return create_tar_from_dict(payload)
+
+
+def _serialize_dataframe_pickle(df: pd.DataFrame) -> BytesIO:
+    buf = BytesIO()
+    pd.to_pickle(df, buf, protocol=pickle.HIGHEST_PROTOCOL)
+    buf.seek(0)
+    return buf
 
 
 def _save_images_to_dir(images: dict[str, BytesIO], output_dir: Path) -> None:

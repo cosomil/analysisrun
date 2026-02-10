@@ -17,6 +17,8 @@ ORCHESTRATOR_MAIN = (
 IMAGE_ANALYSIS_RESULT = REPO_ROOT / "tests" / "testdata" / "image_analysis_result.csv"
 SAMPLES_CSV = REPO_ROOT / "tests" / "testdata" / "samples.csv"
 
+print(sys.executable)
+
 
 def _list_files(dir_path: Path) -> list[Path]:
     return sorted([p for p in dir_path.iterdir() if p.is_file()], key=lambda p: p.name)
@@ -136,8 +138,8 @@ def main() -> int:
 
     seq = 0.0
     par = 0.0
-    dist_whole = 0.0
-    dist_only = 0.0
+    # dist_whole = 0.0
+    # dist_only = 0.0
 
     with tempfile.TemporaryDirectory(prefix="analysisrun-orchestrator-") as td:
         orchestrator_path = Path(td) / "orchestrator"
@@ -145,20 +147,20 @@ def main() -> int:
 
         seq = _run_one(mode="sequential")
         par = _run_one(mode="parallel")
-        dist_whole = _run_distributed(
-            run_mode="whole", orchestrator_path=orchestrator_path
-        )
-        dist_only = _run_distributed(
-            run_mode="only", orchestrator_path=orchestrator_path
-        )
+        # dist_whole = _run_distributed(
+        #     run_mode="whole", orchestrator_path=orchestrator_path
+        # )
+        # dist_only = _run_distributed(
+        #     run_mode="only", orchestrator_path=orchestrator_path
+        # )
 
     # 参考情報（要件外の最小出力）
     if par > 0:
         print(f"speedup(sequential/parallel)={seq / par:.3f}x")
-    if dist_whole > 0:
-        print(f"speedup(sequential/distributed-whole)={seq / dist_whole:.3f}x")
-    if dist_only > 0:
-        print(f"speedup(sequential/distributed-only)={seq / dist_only:.3f}x")
+    # if dist_whole > 0:
+    #     print(f"speedup(sequential/distributed-whole)={seq / dist_whole:.3f}x")
+    # if dist_only > 0:
+    #     print(f"speedup(sequential/distributed-only)={seq / dist_only:.3f}x")
 
     return 0
 

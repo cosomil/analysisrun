@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -42,17 +43,21 @@ class ImageResults(NamedTuple):
     )
 
 
-def _load_csv_df(path: Path) -> BytesIO:
+def _load_pickle_df(path: Path) -> BytesIO:
     df = pd.read_csv(path)
+    return _dump_pickle(df)
+
+
+def _dump_csv(df: pd.DataFrame) -> BytesIO:
     buf = BytesIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
     return buf
 
 
-def _dump_csv(df: pd.DataFrame) -> BytesIO:
+def _dump_pickle(df: pd.DataFrame) -> BytesIO:
     buf = BytesIO()
-    df.to_csv(buf, index=False)
+    pickle.dump(df, buf, protocol=pickle.HIGHEST_PROTOCOL)
     buf.seek(0)
     return buf
 
@@ -135,7 +140,7 @@ def test_run_analysis_only_outputs_tar(monkeypatch):
             "data_name": "0000",
             "sample_name": "SampleA",
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -193,7 +198,7 @@ def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, c
             "data_name": "0000",
             "sample_name": "SampleA",
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -513,6 +518,11 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
         assert tar_in["sample_name"] == "SampleA"
         assert "params" in tar_in
         assert "image_analysis_results" in tar_in
+        activity_spots = tar_in["image_analysis_results"]["activity_spots"]
+        assert isinstance(activity_spots, BytesIO)
+        restored_df = pickle.loads(activity_spots.getvalue())
+        assert isinstance(restored_df, pd.DataFrame)
+        assert not restored_df.empty
 
         series_csv = b"total_value\n1\n"
         tar_out = create_tar_from_dict(
@@ -686,7 +696,7 @@ def test_run_analyze_seq_outputs_tar_with_multiple_targets_sequential(
         {
             "targets": json.dumps({"0000": "SampleA", "0001": "SampleB"}),
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -785,7 +795,7 @@ def test_run_analyze_seq_handles_target_failures_immediate(monkeypatch, capsys):
                 {"0000": "SampleA", "0001": "SampleB", "0002": "SampleC"}
             ),
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -866,7 +876,7 @@ def test_run_analyze_seq_with_print_statements_doesnt_corrupt_output(
         {
             "targets": json.dumps({"0000": "SampleA", "0001": "SampleB"}),
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }

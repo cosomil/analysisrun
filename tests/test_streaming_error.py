@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 from io import BytesIO
 from pathlib import Path
 from typing import NamedTuple
@@ -38,10 +39,10 @@ class ImageResults(NamedTuple):
     )
 
 
-def _load_csv_df(path: Path) -> BytesIO:
+def _load_pickle_df(path: Path) -> BytesIO:
     df = pd.read_csv(path)
     buf = BytesIO()
-    df.to_csv(buf, index=False)
+    pickle.dump(df, buf, protocol=pickle.HIGHEST_PROTOCOL)
     buf.seek(0)
     return buf
 
@@ -61,7 +62,7 @@ def test_streaming_error_outputs_partial_images_and_error_entry(monkeypatch):
             "data_name": "0000",
             "sample_name": "SampleA",
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
@@ -126,7 +127,7 @@ def test_streaming_tar_structure_order(monkeypatch):
             "data_name": "0000",
             "sample_name": "SampleA",
             "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_csv_df(
+            "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
             ),
         }
