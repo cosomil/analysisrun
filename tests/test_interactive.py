@@ -53,9 +53,8 @@ class Test_VirtualFile:
         assert_readable_as_csv(out.target)
 
     def test_from_double_quoted_str(self):
-        _in: dict[str, Any] = {
-            "target": f'"{Path(__file__).parent / "testdata" / "samples.csv"}"'
-        }
+        path = Path(__file__).parent / "testdata" / "samples.csv"
+        _in: dict[str, Any] = {"target": f'"{path}"'}
         out = Input(**_in)
 
         # ディレクトリを取得できる
