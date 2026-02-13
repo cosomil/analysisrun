@@ -188,7 +188,8 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
 
             # モデルのインスタンスを作成してみる
             return model_class(**field_values)
-
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             print("\n⚠️ 入力値にエラーがあります:")
 
@@ -237,6 +238,11 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
             print()
 
 
+class InputAborted(KeyboardInterrupt):
+    def __str__(self):
+        return "\n\n⚠️ 入力が中断されました。"
+
+
 def scan_model_input(model_class: Type[T]) -> T:
     """
     モデルのフィールドをインタラクティブに入力し、モデルのインスタンスを返します。
@@ -250,7 +256,10 @@ def scan_model_input(model_class: Type[T]) -> T:
     model_class
         Pydanticモデルクラス
     """
-    return _scan_object(model_class, None)
+    try:
+        return _scan_object(model_class, None)
+    except KeyboardInterrupt:
+        raise InputAborted() from None
 
 
 def custom_input():
@@ -284,7 +293,9 @@ class FilePath(str):
         def validate(v):
             if not isinstance(v, str):
                 return v
-            if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
+            if (v.startswith("'") and v.endswith("'")) or (
+                v.startswith('"') and v.endswith('"')
+            ):
                 v = v[1:-1]
             p = Path(v)
             if not p.exists():
@@ -309,7 +320,9 @@ class DirectoryPath(str):
         def validate(v):
             if not isinstance(v, str):
                 return v
-            if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
+            if (v.startswith("'") and v.endswith("'")) or (
+                v.startswith('"') and v.endswith('"')
+            ):
                 v = v[1:-1]
             p = Path(v)
             if not p.exists():
@@ -359,7 +372,9 @@ class VirtualFile(Path):
         def validate(v):
             if isinstance(v, (str, Path)):
                 if isinstance(v, str):
-                    if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
+                    if (v.startswith("'") and v.endswith("'")) or (
+                        v.startswith('"') and v.endswith('"')
+                    ):
                         v = v[1:-1]
                     v = Path(v)
                 if not v.exists():
