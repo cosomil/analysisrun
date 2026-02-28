@@ -8,7 +8,7 @@ from typing import IO, Iterator, NoReturn, Optional
 
 from pydantic import BaseModel, Field
 
-from analysisrun.__env import get_interactivity
+from analysisrun.env import get_interactivity
 from analysisrun.helper import cowsay
 from analysisrun.interactive import VirtualFile
 from analysisrun.tar import create_tar_from_dict

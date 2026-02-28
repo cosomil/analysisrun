@@ -27,8 +27,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from analysisrun.__env import get_entrypoint, get_interactivity
-from analysisrun.__typing import NamedTupleLike, VirtualFileLike
+from analysisrun.env import get_entrypoint, get_interactivity
+from analysisrun.typing import NamedTupleLike, VirtualFileLike
 from analysisrun.cleansing import CleansedData, filter_by_entity
 from analysisrun.helper import read_dict
 from analysisrun.interactive import VirtualFile, scan_model_input
@@ -474,9 +474,7 @@ class AnalysisContext[
                         preprocess, analyze, postprocess
                     )
                 case _ParallelState():
-                    return self._run_parallel_with_preprocess(
-                        preprocess, postprocess
-                    )
+                    return self._run_parallel_with_preprocess(preprocess, postprocess)
                 case _ParallelStreamingState():
                     return self._run_parallel_streaming_with_preprocess(
                         preprocess, postprocess, stdout, stderr
@@ -1188,7 +1186,11 @@ class AnalysisContext[
                 if result.returncode != 0:
                     err_msg = result.error or "不明なエラーが発生しました。"
                     failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                    return [], images_by_data, (failed_data, failed_sample, err_msg, err_out)
+                    return (
+                        [],
+                        images_by_data,
+                        (failed_data, failed_sample, err_msg, err_out),
+                    )
 
                 if not result.tar_read_ok:
                     data_name, sample_name = targets[0]
@@ -1204,7 +1206,9 @@ class AnalysisContext[
                     )
 
                 if result.error is not None:
-                    failed_data, failed_sample = _infer_failed_target(result.error, targets)
+                    failed_data, failed_sample = _infer_failed_target(
+                        result.error, targets
+                    )
                     return (
                         [],
                         images_by_data,
@@ -1246,7 +1250,11 @@ class AnalysisContext[
                     else "不明なエラーが発生しました。"
                 )
                 failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                return [], images_by_data, (failed_data, failed_sample, err_msg, err_out)
+                return (
+                    [],
+                    images_by_data,
+                    (failed_data, failed_sample, err_msg, err_out),
+                )
 
             if not isinstance(tar_result, dict):
                 data_name, sample_name = targets[0]
@@ -1264,7 +1272,11 @@ class AnalysisContext[
             if "error" in tar_result:
                 err_msg = str(tar_result["error"])
                 failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                return [], images_by_data, (failed_data, failed_sample, err_msg, err_out)
+                return (
+                    [],
+                    images_by_data,
+                    (failed_data, failed_sample, err_msg, err_out),
+                )
 
             chunk_results: list[pd.Series] = []
             for data_name, sample_name in targets:
@@ -1320,7 +1332,10 @@ class AnalysisContext[
                     output_dir,
                 )
             _write_parallel_chunk_errors(stderr, errors)
-            lanes = [f"- {data_name} ({sample_name})" for data_name, sample_name, _, _ in errors]
+            lanes = [
+                f"- {data_name} ({sample_name})"
+                for data_name, sample_name, _, _ in errors
+            ]
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
                 "\n".join(["解析中にエラーが発生しました。", *lanes]),
@@ -1423,14 +1438,14 @@ def read_context[
 
     mode: Literal["sequential", "parallel-entrypoint", "parallel-entrypoint-streaming"]
     if interactivity is None:
-            mode = "parallel-entrypoint-streaming"
-            try:
-                tar_dict = read_tar_as_dict(_stdin)
-                tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
-                runtime_input = RuntimeInputModel(**tar_dict)
-            except Exception as exc:
-                exit_with_error(
-                    ExitCodes.INVALID_USAGE,
+        mode = "parallel-entrypoint-streaming"
+        try:
+            tar_dict = read_tar_as_dict(_stdin)
+            tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
+            runtime_input = RuntimeInputModel(**tar_dict)
+        except Exception as exc:
+            exit_with_error(
+                ExitCodes.INVALID_USAGE,
                 "入力データの読み込みに失敗しました。入力形式を確認してください。",
                 _stdout,
                 _stderr,
@@ -2041,8 +2056,8 @@ def _write_parallel_chunk_errors(
         header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
         footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
         stderr.write(
-            "\n".join([header, err_msg.strip(), "", err_out.strip(), footer, "", ""]).encode(
-                "utf-8"
-            )
+            "\n".join(
+                [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
+            ).encode("utf-8")
         )
     stderr.flush()
