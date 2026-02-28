@@ -62,6 +62,13 @@ def _dump_pickle(df: pd.DataFrame) -> BytesIO:
     return buf
 
 
+def _dump_pickle_obj(value) -> BytesIO:
+    buf = BytesIO()
+    pickle.dump(value, buf, protocol=pickle.HIGHEST_PROTOCOL)
+    buf.seek(0)
+    return buf
+
+
 def _force_interactivity(monkeypatch, value: str | None) -> None:
     """read_context と exit_with_error の両方で同じ interactivity を返すように固定する。"""
 
@@ -1030,3 +1037,233 @@ def test_run_analyze_seq_with_print_statements_doesnt_corrupt_output(
     assert "Debug: Analyzing 0001" in captured.err
     assert "Debug: Processing" in captured.err
     assert "Debug: Total value is" in captured.err
+
+
+def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
+    monkeypatch.setenv("PSEUDO_NBENV", "1")
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+
+    manual_input = ManualInput(
+        params=Params(threshold=2),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=SAMPLES_CSV,
+    )
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+    )
+    calls = {"count": 0}
+
+    def preprocess(args):
+        calls["count"] += 1
+        df = args.image_analysis_results["activity_spots"]
+        return {"row_count": int(len(df)), "threshold": int(args.params.threshold)}
+
+    def analyze(args):
+        df = args.image_analysis_results.activity_spots.data
+        return pd.Series(
+            {
+                "total_value": int(df["Value"].sum()),
+                "row_count": args.preprocessed_data["row_count"],
+            }
+        )
+
+    def postprocess(args):
+        df = args.analysis_results.copy()
+        df["pre_threshold"] = args.preprocessed_data["threshold"]
+        return df
+
+    result_df = ctx.run_analysis_with_preprocess(
+        preprocess=preprocess,
+        analyze=analyze,
+        postprocess=postprocess,
+    )
+
+    assert set(result_df["data_name"]) == {"0000", "0001"}
+    assert all(result_df["pre_threshold"] == 2)
+    assert all(result_df["row_count"] > 0)
+    assert calls["count"] == 1
+
+
+def test_run_analysis_with_preprocess_analysis_only_outputs_tar(monkeypatch):
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
+    stdout_buf = BytesIO()
+
+    tar_buf = create_tar_from_dict(
+        {
+            "data_name": "0000",
+            "sample_name": "SampleA",
+            "params": Params(threshold=3).model_dump_json(),
+            "image_analysis_results/activity_spots": _load_pickle_df(
+                IMAGE_ANALYSIS_RESULT_CSV
+            ),
+        }
+    )
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    def preprocess(args):
+        assert isinstance(args.image_analysis_results["activity_spots"], pd.DataFrame)
+        return {"scale": args.params.threshold}
+
+    def analyze(args):
+        df = args.image_analysis_results.activity_spots.data
+        return pd.Series(
+            {"total_value": int(df["Value"].sum() * args.preprocessed_data["scale"])}
+        )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis_with_preprocess(preprocess=preprocess, analyze=analyze)
+
+    assert excinfo.value.code == 0
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert "analysis_result" in tar_result
+    assert "preprocessed_data" in tar_result
+    preprocessed = pickle.loads(tar_result["preprocessed_data"].getvalue())
+    assert preprocessed == {"scale": 3}
+
+
+def test_run_analysis_with_preprocess_postprocess_only_outputs_tar(monkeypatch):
+    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
+    stdout_buf = BytesIO()
+
+    analysis_results = pd.DataFrame(
+        [
+            {"data_name": "0000", "sample_name": "SampleA", "total_value": 4},
+            {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
+        ]
+    )
+
+    tar_buf = create_tar_from_dict(
+        {
+            "analysis_results": {
+                "0": _dump_csv(analysis_results.iloc[[0]]),
+                "1": _dump_csv(analysis_results.iloc[[1]]),
+            },
+            "preprocessed_data": _dump_pickle_obj(
+                {"multipliers": {"0000": 10, "0001": 100}}
+            ),
+            "params": Params(threshold=1).model_dump_json(),
+        }
+    )
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(tar_buf.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    def postprocess(args):
+        df = args.analysis_results.copy()
+        df["scaled"] = df.apply(
+            lambda row: row["total_value"]
+            * args.preprocessed_data["multipliers"][row["data_name"]],
+            axis=1,
+        )
+        return df
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis_with_preprocess(
+            preprocess=lambda _: {"unused": True},
+            analyze=lambda _: pd.Series({"unused": 0}),
+            postprocess=postprocess,
+        )
+
+    assert excinfo.value.code == 0
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    csv_buf = tar_result["result_csv"]
+    assert isinstance(csv_buf, BytesIO)
+    csv_df = pd.read_csv(csv_buf)
+    assert list(csv_df["scaled"]) == [40, 600]
+
+
+def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_data(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, "terminal")
+
+    import analysisrun.pipeable as pipeable
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    samples_csv = _write_samples_csv(
+        tmp_path, [("0000", "SampleA"), ("0001", "SampleB")]
+    )
+    manual_input = ManualInput(
+        params=Params(threshold=1),
+        image_analysis_results={"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+        sample_names=samples_csv,
+    )
+    calls = {"count": 0}
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        targets = json.loads(tar_in["targets"])
+        preprocessed_data = pickle.loads(tar_in["preprocessed_data"].getvalue())
+        assert isinstance(preprocessed_data, dict)
+        assert "multipliers" in preprocessed_data
+        out: dict[str, BytesIO] = {}
+        for data_name, sample_name in targets.items():
+            out[f"{data_name}/analysis_result"] = _dump_csv(
+                pd.DataFrame(
+                    [
+                        {
+                            "data_name": data_name,
+                            "sample_name": sample_name,
+                            "total_value": 2,
+                        }
+                    ]
+                )
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=create_tar_from_dict(out).getvalue(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    ctx = read_context(
+        Params,
+        ImageResults,
+        manual_input=manual_input,
+        output_dir=tmp_path / "out",
+    )
+
+    def postprocess(args):
+        df = args.analysis_results.copy()
+        df["scaled"] = df.apply(
+            lambda row: row["total_value"]
+            * args.preprocessed_data["multipliers"][row["data_name"]],
+            axis=1,
+        )
+        return df
+
+    def preprocess(args):
+        calls["count"] += 1
+        return {
+            "multipliers": {
+                data_name: 5 + i * 2 for i, data_name in enumerate(args.targets)
+            }
+        }
+
+    result_df = ctx.run_analysis_with_preprocess(
+        preprocess=preprocess,
+        analyze=lambda _: pd.Series({"unused": 0}),
+        postprocess=postprocess,
+    ).sort_values("data_name")
+
+    assert list(result_df["data_name"]) == ["0000", "0001"]
+    assert list(result_df["scaled"]) == [10, 14]
+    assert calls["count"] == 1

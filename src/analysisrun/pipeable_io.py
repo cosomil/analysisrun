@@ -200,6 +200,10 @@ class AnalysisInputModel[
     data_name: str = Field(description="解析対象のデータ名")
     sample_name: str = Field(description="解析対象のサンプル名")
     params: Params = Field(description="解析全体に関わるパラメータ")
+    preprocessed_data: Optional[VirtualFile] = Field(
+        default=None,
+        description="前処理済みデータ（任意）",
+    )
     image_analysis_results: ImageAnalysisResultsInput = Field(
         description="画像解析結果CSVデータ"
     )
@@ -235,6 +239,10 @@ class AnalyzeSeqInputModel[
         description="解析対象データ情報。keyはdata_name、valueはsample_name"
     )
     params: Params = Field(description="解析全体に関わるパラメータ")
+    preprocessed_data: Optional[VirtualFile] = Field(
+        default=None,
+        description="前処理済みデータ（任意）",
+    )
     image_analysis_results: ImageAnalysisResultsInput = Field(
         description="画像解析結果CSVデータ"
     )
@@ -254,6 +262,10 @@ class PostprocessInputModel[
     """
 
     analysis_results: dict[str, VirtualFile] = Field(description="解析結果データセット")
+    preprocessed_data: Optional[VirtualFile] = Field(
+        default=None,
+        description="前処理済みデータ（任意）",
+    )
     params: Params = Field(description="解析全体に関わるパラメータ")
 
     model_config = {
