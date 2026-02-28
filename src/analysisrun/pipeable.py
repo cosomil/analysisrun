@@ -32,13 +32,10 @@ from analysisrun.cleansing import CleansedData, filter_by_entity
 from analysisrun.helper import read_dict
 from analysisrun.interactive import VirtualFile, scan_model_input
 from analysisrun.pipeable_io import (
-    AnalysisInputModel,
     AnalyzeSeqInputModel,
     ExitCodes,
-    PostprocessInputModel,
     exit_with_error,
     exit_with_error_streaming,
-    list_from_dict,
     redirect_stdout_to_stderr,
 )
 from analysisrun.scanner import Fields, Lanes
@@ -311,13 +308,6 @@ class _BaseState:
 
 
 @dataclass
-class _AnalysisState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
-    parsed_input: AnalysisInputModel[ParamsT, ImageInputModelT]
-    specs: dict[str, _ImageAnalysisResultSpec]
-    field_numbers: list[int]
-
-
-@dataclass
 class _AnalyzeSeqState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseState):
     """
     複数ターゲットのシーケンシャル解析モード用のState
@@ -327,11 +317,6 @@ class _AnalyzeSeqState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseSta
 
     parsed_input: AnalyzeSeqInputModel[ParamsT, ImageInputModelT]
     field_numbers: list[int]
-
-
-@dataclass
-class _PostprocessState[ParamsT: BaseModel](_BaseState):
-    parsed_input: PostprocessInputModel[ParamsT]
 
 
 @dataclass
@@ -352,6 +337,14 @@ class _ParallelState(_BaseState):
 
 
 @dataclass
+class _ParallelStreamingState(_BaseState):
+    raw_data: dict[str, pd.DataFrame]
+    sample_pairs: list[tuple[str, str]]
+    entrypoint: Path
+    field_numbers: list[int]
+
+
+@dataclass
 class AnalysisContext[
     Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[Fields],
@@ -365,34 +358,30 @@ class AnalysisContext[
     image_analysis_results: Type[ImageAnalysisResults]
     output: Output
     state: (
-        _AnalysisState[Params, BaseModel]
-        | _AnalyzeSeqState[Params, BaseModel]
-        | _PostprocessState[Params]
+        _AnalyzeSeqState[Params, BaseModel]
         | _SequentialState
         | _ParallelState
+        | _ParallelStreamingState
     )
 
     @property
     def mode(
         self,
     ) -> Literal[
-        "analysis-only",
         "analyze-seq",
-        "postprocess-only",
         "sequential",
         "parallel-entrypoint",
+        "parallel-entrypoint-streaming",
     ]:
         match self.state:
-            case _AnalysisState():
-                return "analysis-only"
             case _AnalyzeSeqState():
                 return "analyze-seq"
-            case _PostprocessState():
-                return "postprocess-only"
             case _SequentialState():
                 return "sequential"
             case _ParallelState():
                 return "parallel-entrypoint"
+            case _ParallelStreamingState():
+                return "parallel-entrypoint-streaming"
 
     def run_analysis(
         self,
@@ -402,11 +391,10 @@ class AnalysisContext[
         """
         read_contextで読み込んだコンテキストに基づいて数値解析を実行する。
 
-        - mode="analysis-only": 1レーンの解析だけを行い、結果をまとめたtarデータを標準出力に書き出す。その後exitする。
         - mode="analyze-seq": 複数レーンの解析をシーケンシャルに行い、各レーンの解析結果をまとめたtarデータを標準出力に書き出す。その後exitする。
-        - mode="postprocess-only": 各レーンの解析結果を結合し、後処理を行った結果をtarデータとして標準出力に書き出す。その後exitする。
         - mode="sequential": multiprocessingを活用できないJupyter notebook環境において、全レーンをシーケンシャルに処理し、DataFrameを返す。
         - mode="parallel-entrypoint": entrypointを並列起動し、各プロセスで複数レーンをanalyzeseq実行した結果を集約、後処理を加えてDataFrameを返す。
+        - mode="parallel-entrypoint-streaming": entrypointを並列起動し、結果を集約してtarデータを標準出力に書き出す。その後exitする。
 
         :param analyze: レーンごとに実行される解析処理の実装。
         :param postprocess: 後処理の実装（任意）。全レーンの解析結果をもとにさらに判定を加えたい場合に使用する。
@@ -418,27 +406,20 @@ class AnalysisContext[
 
         try:
             match self.state:
-                case _AnalysisState():
-                    return self._run_analysis_only(analyze, stdout, stderr)
                 case _AnalyzeSeqState():
                     return self._run_analyze_seq(analyze, stdout, stderr)
-                case _PostprocessState():
-                    return self._run_postprocess_only(postprocess, stdout, stderr)
                 case _SequentialState():
-                    return self._run_local_sequential(analyze, postprocess)
+                    return self._run_sequential(analyze, postprocess)
                 case _ParallelState():
-                    return self._run_local_parallel(postprocess)
+                    return self._run_parallel(postprocess)
+                case _ParallelStreamingState():
+                    return self._run_parallel_streaming(postprocess, stdout, stderr)
         except SystemExit:
             raise
         except Exception as exc:
-            message = (
-                "後処理中に不明なエラーが発生しました。開発者に確認してください。"
-                if isinstance(self.state, _PostprocessState)
-                else "解析処理中に不明なエラーが発生しました。開発者に確認してください。"
-            )
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
-                message,
+                "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
                 stdout,
                 stderr,
                 exc,
@@ -483,224 +464,32 @@ class AnalysisContext[
 
         try:
             match self.state:
-                case _AnalysisState():
-                    return self._run_analysis_only_with_preprocess(
-                        preprocess, analyze, stdout, stderr
-                    )
                 case _AnalyzeSeqState():
                     return self._run_analyze_seq_with_preprocess(
                         preprocess, analyze, stdout, stderr
                     )
-                case _PostprocessState():
-                    return self._run_postprocess_only_with_preprocess(
-                        postprocess, stdout, stderr
-                    )
                 case _SequentialState():
-                    return self._run_local_sequential_with_preprocess(
+                    return self._run_sequential_with_preprocess(
                         preprocess, analyze, postprocess
                     )
                 case _ParallelState():
-                    return self._run_local_parallel_with_preprocess(
+                    return self._run_parallel_with_preprocess(
                         preprocess, postprocess
+                    )
+                case _ParallelStreamingState():
+                    return self._run_parallel_streaming_with_preprocess(
+                        preprocess, postprocess, stdout, stderr
                     )
         except SystemExit:
             raise
         except Exception as exc:
-            message = (
-                "後処理中に不明なエラーが発生しました。開発者に確認してください。"
-                if isinstance(self.state, _PostprocessState)
-                else "解析処理中に不明なエラーが発生しました。開発者に確認してください。"
-            )
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
-                message,
+                "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
                 stdout,
                 stderr,
                 exc,
             )
-
-    def _run_analysis_only(
-        self,
-        analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
-        stdout: IO[bytes],
-        stderr: IO[bytes],
-    ) -> pd.DataFrame:
-        """
-        単一ターゲットの解析を実行し、結果をストリーミングTAR形式で標準出力に出力する。
-
-        画像は生成されるたびに即座にTARエントリとして出力される。
-        エラー発生時はErrorResult仕様に従い"error"エントリを追加して処理を終了する。
-
-        出力TAR構造（正常時）:
-            images/{image_name}  # 画像が生成される順に追加
-            analysis_result      # 最後に追加
-
-        出力TAR構造（エラー時）:
-            images/{image_name}  # エラー前に生成された画像
-            error                # エラーメッセージ（ErrorResult仕様）
-
-        Raises
-        ------
-        SystemExit
-            処理完了時（成功/失敗問わず）
-        """
-        assert isinstance(self.state, _AnalysisState)
-        state = self.state
-        parsed = state.parsed_input
-        specs = state.specs
-        field_numbers = state.field_numbers
-
-        # TARストリームを開く（パイプモード: w|）
-        with tarfile.open(fileobj=stdout, mode="w|") as tar:
-            output = _TarStreamingOutput(tar)
-
-            try:
-                # データのクレンジングとレーン構築
-                cleansed_data = _load_and_cleanse_image_results(
-                    parsed.image_analysis_results,
-                    specs,
-                    serialization="pickle",
-                )
-                lanes = _build_fields_namedtuple(
-                    self.image_analysis_results,
-                    cleansed_data,
-                    parsed.data_name,
-                    field_numbers,
-                )
-
-                # 解析実行（画像は生成されるたびにTARに書き込まれる）
-                with redirect_stdout_to_stderr(stderr):
-                    series = analyze(
-                        AnalyzeArgs(
-                            parsed.params,
-                            parsed.data_name,
-                            parsed.sample_name,
-                            lanes,
-                            output,
-                        )
-                    )
-                _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
-            except Exception as exc:
-                exit_with_error_streaming(
-                    ExitCodes.PROCESSING_ERROR,
-                    "解析処理中にエラーが発生しました。",
-                    tar,
-                    stderr,
-                    exc,
-                )
-
-            # 解析結果をTARに追加（画像の後）
-            result_csv = _serialize_series(series)
-            result_csv.seek(0)
-            result_data = result_csv.read()
-
-            tar_info = tarfile.TarInfo(name="analysis_result")
-            tar_info.size = len(result_data)
-            tar_info.pax_headers = {"is_file": "true"}
-            tar.addfile(tar_info, BytesIO(result_data))
-
-        # 正常終了: TAR自動クローズ済み
-        stdout.flush()
-        sys.exit(0)
-
-    def _run_analysis_only_with_preprocess[
-        PreprocessedData,
-    ](
-        self,
-        preprocess: Callable[
-            [PreprocessArgs[Params]],
-            PreprocessedData,
-        ],
-        analyze: Callable[
-            [
-                AnalyzeArgsWithPreprocess[
-                    Params,
-                    ImageAnalysisResults,
-                    PreprocessedData,
-                ]
-            ],
-            pd.Series,
-        ],
-        stdout: IO[bytes],
-        stderr: IO[bytes],
-    ) -> pd.DataFrame:
-        assert isinstance(self.state, _AnalysisState)
-        state = self.state
-        parsed = state.parsed_input
-        specs = state.specs
-        field_numbers = state.field_numbers
-
-        with tarfile.open(fileobj=stdout, mode="w|") as tar:
-            output = _TarStreamingOutput(tar)
-
-            try:
-                raw_data = _load_image_results_raw(
-                    parsed.image_analysis_results,
-                    serialization="pickle",
-                )
-                cleansed_data = _load_and_cleanse_image_results(
-                    parsed.image_analysis_results,
-                    specs,
-                    serialization="pickle",
-                )
-                lanes = _build_fields_namedtuple(
-                    self.image_analysis_results,
-                    cleansed_data,
-                    parsed.data_name,
-                    field_numbers,
-                )
-                with redirect_stdout_to_stderr(stderr):
-                    if parsed.preprocessed_data:
-                        preprocessed_data = _deserialize_preprocessed_data(
-                            parsed.preprocessed_data.unwrap()
-                        )
-                    else:
-                        preprocessed_data = preprocess(
-                            PreprocessArgs(
-                                parsed.params,
-                                raw_data,
-                                {parsed.data_name: parsed.sample_name},
-                            )
-                        )
-                    series = analyze(
-                        AnalyzeArgsWithPreprocess(
-                            parsed.params,
-                            parsed.data_name,
-                            parsed.sample_name,
-                            lanes,
-                            output,
-                            preprocessed_data,
-                        )
-                    )
-                _ensure_result_annotations(series, parsed.data_name, parsed.sample_name)
-            except Exception as exc:
-                exit_with_error_streaming(
-                    ExitCodes.PROCESSING_ERROR,
-                    "解析処理中にエラーが発生しました。",
-                    tar,
-                    stderr,
-                    exc,
-                )
-
-            result_csv = _serialize_series(series)
-            result_csv.seek(0)
-            result_data = result_csv.read()
-
-            tar_info = tarfile.TarInfo(name="analysis_result")
-            tar_info.size = len(result_data)
-            tar_info.pax_headers = {"is_file": "true"}
-            tar.addfile(tar_info, BytesIO(result_data))
-
-            preprocessed = _serialize_preprocessed_data(preprocessed_data)
-            preprocessed.seek(0)
-            preprocessed_bytes = preprocessed.read()
-            preprocessed_info = tarfile.TarInfo(name="preprocessed_data")
-            preprocessed_info.size = len(preprocessed_bytes)
-            preprocessed_info.pax_headers = {"is_file": "true"}
-            tar.addfile(preprocessed_info, BytesIO(preprocessed_bytes))
-
-        stdout.flush()
-        sys.exit(0)
 
     def _run_analyze_seq(
         self,
@@ -892,121 +681,7 @@ class AnalysisContext[
         stdout.flush()
         sys.exit(0)
 
-    def _run_postprocess_only(
-        self,
-        postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
-        stdout: IO[bytes],
-        stderr: IO[bytes],
-    ) -> pd.DataFrame:
-        assert isinstance(self.state, _PostprocessState)
-        state = self.state
-        parsed = state.parsed_input
-
-        # postprocess は複数 lane の結果（CSV）を受け取り、まず結合してから任意の後処理を適用する。
-        analysis_results_inputs = list_from_dict(parsed.analysis_results)
-        analysis_results: list[pd.DataFrame] = []
-        for analyisis_results_input in analysis_results_inputs:
-            b = analyisis_results_input.unwrap()
-            assert isinstance(b, BytesIO)
-            # 先頭ゼロを含む値（例: "0012"）が落ちないように、列ごとに dtype を再推定する。
-            analysis_results.append(_deserialize_dataframe_with_leading_zeroes(b))
-
-        concatenated_analysis_results = pd.concat(analysis_results, ignore_index=True)
-
-        try:
-            with redirect_stdout_to_stderr(stderr):
-                result_df = (
-                    postprocess(
-                        PostprocessArgs(parsed.params, concatenated_analysis_results)
-                    )
-                    if postprocess
-                    else concatenated_analysis_results
-                )
-            if result_df is None:
-                result_df = concatenated_analysis_results
-        except Exception as exc:
-            exit_with_error(
-                ExitCodes.PROCESSING_ERROR,
-                "後処理でエラーが発生しました。",
-                stdout,
-                stderr,
-                exc,
-            )
-
-        tar_buf = create_tar_from_dict(_build_postprocess_tar_entries(result_df))
-        stdout.write(tar_buf.getvalue())
-        stdout.flush()
-        sys.exit(0)
-
-    def _run_postprocess_only_with_preprocess[
-        PreprocessedData,
-    ](
-        self,
-        postprocess: Optional[
-            Callable[
-                [PostprocessArgsWithPreprocess[Params, PreprocessedData]],
-                pd.DataFrame,
-            ]
-        ],
-        stdout: IO[bytes],
-        stderr: IO[bytes],
-    ) -> pd.DataFrame:
-        assert isinstance(self.state, _PostprocessState)
-        state = self.state
-        parsed = state.parsed_input
-
-        analysis_results_inputs = list_from_dict(parsed.analysis_results)
-        analysis_results: list[pd.DataFrame] = []
-        for analyisis_results_input in analysis_results_inputs:
-            b = analyisis_results_input.unwrap()
-            assert isinstance(b, BytesIO)
-            analysis_results.append(_deserialize_dataframe_with_leading_zeroes(b))
-
-        concatenated_analysis_results = pd.concat(analysis_results, ignore_index=True)
-
-        preprocessed_data: PreprocessedData | None = None
-        if parsed.preprocessed_data:
-            preprocessed_data = _deserialize_preprocessed_data(
-                parsed.preprocessed_data.unwrap()
-            )
-        elif postprocess:
-            exit_with_error(
-                ExitCodes.INVALID_USAGE,
-                "run_analysis_with_preprocess の postprocess 実行には preprocessed_data が必要です。",
-                stdout,
-                stderr,
-            )
-
-        try:
-            with redirect_stdout_to_stderr(stderr):
-                result_df = (
-                    postprocess(
-                        PostprocessArgsWithPreprocess(
-                            parsed.params,
-                            concatenated_analysis_results,
-                            preprocessed_data,  # type: ignore[arg-type]
-                        )
-                    )
-                    if postprocess
-                    else concatenated_analysis_results
-                )
-            if result_df is None:
-                result_df = concatenated_analysis_results
-        except Exception as exc:
-            exit_with_error(
-                ExitCodes.PROCESSING_ERROR,
-                "後処理でエラーが発生しました。",
-                stdout,
-                stderr,
-                exc,
-            )
-
-        tar_buf = create_tar_from_dict(_build_postprocess_tar_entries(result_df))
-        stdout.write(tar_buf.getvalue())
-        stdout.flush()
-        sys.exit(0)
-
-    def _run_local_sequential(
+    def _run_sequential(
         self,
         analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
         postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
@@ -1038,7 +713,7 @@ class AnalysisContext[
                 result_df = postprocessed
         return result_df
 
-    def _run_local_sequential_with_preprocess[
+    def _run_sequential_with_preprocess[
         PreprocessedData,
     ](
         self,
@@ -1108,133 +783,33 @@ class AnalysisContext[
                 result_df = postprocessed
         return result_df
 
-    def _run_local_parallel(
+    def _run_parallel(
         self,
         postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
     ) -> pd.DataFrame:
         assert isinstance(self.state, _ParallelState)
         state = self.state
-        raw_data = state.raw_data
-        sample_pairs = state.sample_pairs
         output_dir = state.output_dir
-        entrypoint = state.entrypoint
-
-        # サブプロセスへの入力は標準入力経由のtarで渡す。
-        # paramsはJSON、image_analysis_resultsはpickleでシリアライズする。
-        params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
+        result_df, images_by_data = self._run_parallel_entrypoint(
+            raw_data=state.raw_data,
+            sample_pairs=state.sample_pairs,
+            entrypoint=state.entrypoint,
+            stdout=state.stdout,
+            stderr=state.stderr,
+            output_dir=output_dir,
+        )
+        flat_images = _flatten_images_by_data(images_by_data)
+        if flat_images:
+            _save_images_to_dir(flat_images, output_dir)
 
-        core_count = os.cpu_count() or 1
-        process_count = min(len(sample_pairs), max(core_count, 1))
-        target_chunks = _split_evenly_in_order(sample_pairs, process_count)
-
-        def _run_chunk(
-            targets: list[tuple[str, str]],
-        ) -> tuple[list[pd.Series], Optional[tuple[str, str, str, str]]]:
-            tar_buf = _build_analyze_seq_tar_buffer(params_payload, targets, raw_data)
-            proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyzeseq")
-
-            if proc.returncode != 0:
-                err, images, err_out = _extract_error_and_images_from_process(proc)
-                if images:
-                    _save_images_to_dir(images, output_dir)
-                err_msg = (
-                    str(err) if err is not None else "不明なエラーが発生しました。"
-                )
-                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                return [], (failed_data, failed_sample, err_msg, err_out)
-
-            try:
-                tar_result = read_tar_as_dict(BytesIO(proc.stdout))
-            except Exception as exc:
-                data_name, sample_name = targets[0]
-                return (
-                    [],
-                    (
-                        data_name,
-                        sample_name,
-                        f"{data_name}の解析結果の読み込みに失敗しました",
-                        str(exc),
-                    ),
-                )
-
-            images = _extract_images_from_tar_dict(tar_result)
-            if images:
-                _save_images_to_dir(images, output_dir)
-
-            if "error" in tar_result:
-                err_msg = str(tar_result["error"])
-                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                return [], (failed_data, failed_sample, err_msg, "")
-
-            chunk_results: list[pd.Series] = []
-            for data_name, sample_name in targets:
-                lane_result = tar_result.get(data_name)
-                if not isinstance(lane_result, dict):
-                    return (
-                        [],
-                        (
-                            data_name,
-                            sample_name,
-                            f"{data_name}の解析結果の形式が不正です。",
-                            "",
-                        ),
-                    )
-                series_buf = lane_result.get("analysis_result")
-                if not isinstance(series_buf, BytesIO):
-                    return (
-                        [],
-                        (
-                            data_name,
-                            sample_name,
-                            f"{data_name}の解析結果の形式が不正です。",
-                            "",
-                        ),
-                    )
-                series = _deserialize_series(series_buf)
-                _ensure_result_annotations(series, data_name, sample_name)
-                chunk_results.append(series)
-            return chunk_results, None
-
-        with ThreadPoolExecutor(max_workers=process_count) as executor:
-            chunk_results = list(executor.map(_run_chunk, target_chunks))
-
-        errors: list[tuple[str, str, str, str]] = []
-        results: list[pd.Series] = []
-        for series_list, err in chunk_results:
-            if err:
-                errors.append(err)
-            else:
-                results.extend(series_list)
-
-        if errors:
-            lanes = []
-            for data_name, sample_name, err_msg, err_out in errors:
-                header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
-                footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
-                state.stderr.write(
-                    "\n".join(
-                        [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
-                    ).encode("utf-8")
-                )
-                lanes.append(f"- {data_name} ({sample_name})")
-            state.stderr.flush()
-
-            exit_with_error(
-                ExitCodes.PROCESSING_ERROR,
-                "\n".join(["解析中にエラーが発生しました。", *lanes]),
-                state.stdout,
-                state.stderr,
-            )
-
-        result_df = pd.DataFrame(results)
         if postprocess:
             postprocessed = postprocess(PostprocessArgs(self.params, result_df))
             if postprocessed is not None:
                 result_df = postprocessed
         return result_df
 
-    def _run_local_parallel_with_preprocess[
+    def _run_parallel_with_preprocess[
         PreprocessedData,
     ](
         self,
@@ -1251,130 +826,31 @@ class AnalysisContext[
     ) -> pd.DataFrame:
         assert isinstance(self.state, _ParallelState)
         state = self.state
-        raw_data = state.raw_data
-        sample_pairs = state.sample_pairs
         output_dir = state.output_dir
-        entrypoint = state.entrypoint
-
-        params_payload = self.params.model_dump_json()
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        core_count = os.cpu_count() or 1
-        process_count = min(len(sample_pairs), max(core_count, 1))
-        target_chunks = _split_evenly_in_order(sample_pairs, process_count)
         preprocessed_data = preprocess(
             PreprocessArgs(
                 self.params,
-                raw_data,
-                {data_name: sample_name for data_name, sample_name in sample_pairs},
+                state.raw_data,
+                {
+                    data_name: sample_name
+                    for data_name, sample_name in state.sample_pairs
+                },
             )
         )
+        result_df, images_by_data = self._run_parallel_entrypoint(
+            raw_data=state.raw_data,
+            sample_pairs=state.sample_pairs,
+            entrypoint=state.entrypoint,
+            stdout=state.stdout,
+            stderr=state.stderr,
+            preprocessed_data=preprocessed_data,
+            output_dir=output_dir,
+        )
+        flat_images = _flatten_images_by_data(images_by_data)
+        if flat_images:
+            _save_images_to_dir(flat_images, output_dir)
 
-        def _run_chunk(
-            targets: list[tuple[str, str]],
-        ) -> tuple[list[pd.Series], Optional[tuple[str, str, str, str]]]:
-            tar_buf = _build_analyze_seq_tar_buffer(
-                params_payload,
-                targets,
-                raw_data,
-                preprocessed_data=preprocessed_data,
-            )
-            proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyzeseq")
-
-            if proc.returncode != 0:
-                err, images, err_out = _extract_error_and_images_from_process(proc)
-                if images:
-                    _save_images_to_dir(images, output_dir)
-                err_msg = (
-                    str(err) if err is not None else "不明なエラーが発生しました。"
-                )
-                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                return [], (failed_data, failed_sample, err_msg, err_out)
-
-            try:
-                tar_result = read_tar_as_dict(BytesIO(proc.stdout))
-            except Exception as exc:
-                data_name, sample_name = targets[0]
-                return (
-                    [],
-                    (
-                        data_name,
-                        sample_name,
-                        f"{data_name}の解析結果の読み込みに失敗しました",
-                        str(exc),
-                    ),
-                )
-
-            images = _extract_images_from_tar_dict(tar_result)
-            if images:
-                _save_images_to_dir(images, output_dir)
-
-            if "error" in tar_result:
-                err_msg = str(tar_result["error"])
-                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
-                return [], (failed_data, failed_sample, err_msg, "")
-
-            chunk_results: list[pd.Series] = []
-            for data_name, sample_name in targets:
-                lane_result = tar_result.get(data_name)
-                if not isinstance(lane_result, dict):
-                    return (
-                        [],
-                        (
-                            data_name,
-                            sample_name,
-                            f"{data_name}の解析結果の形式が不正です。",
-                            "",
-                        ),
-                    )
-                series_buf = lane_result.get("analysis_result")
-                if not isinstance(series_buf, BytesIO):
-                    return (
-                        [],
-                        (
-                            data_name,
-                            sample_name,
-                            f"{data_name}の解析結果の形式が不正です。",
-                            "",
-                        ),
-                    )
-                series = _deserialize_series(series_buf)
-                _ensure_result_annotations(series, data_name, sample_name)
-                chunk_results.append(series)
-            return chunk_results, None
-
-        with ThreadPoolExecutor(max_workers=process_count) as executor:
-            chunk_results = list(executor.map(_run_chunk, target_chunks))
-
-        errors: list[tuple[str, str, str, str]] = []
-        results: list[pd.Series] = []
-        for series_list, err in chunk_results:
-            if err:
-                errors.append(err)
-            else:
-                results.extend(series_list)
-
-        if errors:
-            lanes = []
-            for data_name, sample_name, err_msg, err_out in errors:
-                header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
-                footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
-                state.stderr.write(
-                    "\n".join(
-                        [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
-                    ).encode("utf-8")
-                )
-                lanes.append(f"- {data_name} ({sample_name})")
-            state.stderr.flush()
-
-            exit_with_error(
-                ExitCodes.PROCESSING_ERROR,
-                "\n".join(["解析中にエラーが発生しました。", *lanes]),
-                state.stdout,
-                state.stderr,
-            )
-
-        result_df = pd.DataFrame(results)
         if postprocess:
             postprocessed = postprocess(
                 PostprocessArgsWithPreprocess(
@@ -1386,6 +862,232 @@ class AnalysisContext[
             if postprocessed is not None:
                 result_df = postprocessed
         return result_df
+
+    def _run_parallel_streaming(
+        self,
+        postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+    ) -> pd.DataFrame:
+        assert isinstance(self.state, _ParallelStreamingState)
+        state = self.state
+        result_df, images_by_data = self._run_parallel_entrypoint(
+            raw_data=state.raw_data,
+            sample_pairs=state.sample_pairs,
+            entrypoint=state.entrypoint,
+            stdout=state.stdout,
+            stderr=state.stderr,
+        )
+        if postprocess:
+            with redirect_stdout_to_stderr(stderr):
+                postprocessed = postprocess(PostprocessArgs(self.params, result_df))
+            if postprocessed is not None:
+                result_df = postprocessed
+
+        tar_buf = create_tar_from_dict(
+            _build_parallel_streaming_tar_entries(result_df, images_by_data)
+        )
+        stdout.write(tar_buf.getvalue())
+        stdout.flush()
+        sys.exit(0)
+
+    def _run_parallel_streaming_with_preprocess[
+        PreprocessedData,
+    ](
+        self,
+        preprocess: Callable[
+            [PreprocessArgs[Params]],
+            PreprocessedData,
+        ],
+        postprocess: Optional[
+            Callable[
+                [PostprocessArgsWithPreprocess[Params, PreprocessedData]],
+                pd.DataFrame,
+            ]
+        ],
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+    ) -> pd.DataFrame:
+        assert isinstance(self.state, _ParallelStreamingState)
+        state = self.state
+        with redirect_stdout_to_stderr(stderr):
+            preprocessed_data = preprocess(
+                PreprocessArgs(
+                    self.params,
+                    state.raw_data,
+                    {
+                        data_name: sample_name
+                        for data_name, sample_name in state.sample_pairs
+                    },
+                )
+            )
+        result_df, images_by_data = self._run_parallel_entrypoint(
+            raw_data=state.raw_data,
+            sample_pairs=state.sample_pairs,
+            entrypoint=state.entrypoint,
+            stdout=state.stdout,
+            stderr=state.stderr,
+            preprocessed_data=preprocessed_data,
+        )
+
+        if postprocess:
+            with redirect_stdout_to_stderr(stderr):
+                postprocessed = postprocess(
+                    PostprocessArgsWithPreprocess(
+                        self.params,
+                        result_df,
+                        preprocessed_data,
+                    )
+                )
+            if postprocessed is not None:
+                result_df = postprocessed
+
+        tar_buf = create_tar_from_dict(
+            _build_parallel_streaming_tar_entries(result_df, images_by_data)
+        )
+        stdout.write(tar_buf.getvalue())
+        stdout.flush()
+        sys.exit(0)
+
+    def _run_parallel_entrypoint(
+        self,
+        raw_data: dict[str, pd.DataFrame],
+        sample_pairs: list[tuple[str, str]],
+        entrypoint: Path,
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+        preprocessed_data: Any | None = None,
+        output_dir: Path | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, dict[str, BytesIO]]]:
+        if not sample_pairs:
+            return pd.DataFrame(), {}
+
+        params_payload = self.params.model_dump_json()
+        core_count = os.cpu_count() or 1
+        process_count = min(len(sample_pairs), max(core_count, 1))
+        target_chunks = _split_evenly_in_order(sample_pairs, process_count)
+
+        def _run_chunk(
+            targets: list[tuple[str, str]],
+        ) -> tuple[
+            list[pd.Series],
+            dict[str, dict[str, BytesIO]],
+            Optional[tuple[str, str, str, str]],
+        ]:
+            tar_buf = _build_analyze_seq_tar_buffer(
+                params_payload,
+                targets,
+                raw_data,
+                preprocessed_data=preprocessed_data,
+            )
+            proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyzeseq")
+            err_out = proc.stderr.decode("utf-8", errors="ignore")
+            tar_result = _try_read_tar_from_bytes(proc.stdout)
+            images_by_data = (
+                _extract_images_by_data_from_tar_dict(tar_result)
+                if isinstance(tar_result, dict)
+                else {}
+            )
+
+            if proc.returncode != 0:
+                err_msg = (
+                    str(tar_result["error"])
+                    if isinstance(tar_result, dict) and "error" in tar_result
+                    else "不明なエラーが発生しました。"
+                )
+                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
+                return [], images_by_data, (failed_data, failed_sample, err_msg, err_out)
+
+            if not isinstance(tar_result, dict):
+                data_name, sample_name = targets[0]
+                return (
+                    [],
+                    images_by_data,
+                    (
+                        data_name,
+                        sample_name,
+                        f"{data_name}の解析結果の読み込みに失敗しました",
+                        err_out,
+                    ),
+                )
+
+            if "error" in tar_result:
+                err_msg = str(tar_result["error"])
+                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
+                return [], images_by_data, (failed_data, failed_sample, err_msg, err_out)
+
+            chunk_results: list[pd.Series] = []
+            for data_name, sample_name in targets:
+                lane_result = tar_result.get(data_name)
+                if not isinstance(lane_result, dict):
+                    return (
+                        [],
+                        images_by_data,
+                        (
+                            data_name,
+                            sample_name,
+                            f"{data_name}の解析結果の形式が不正です。",
+                            err_out,
+                        ),
+                    )
+                series_buf = lane_result.get("analysis_result")
+                if not isinstance(series_buf, BytesIO):
+                    return (
+                        [],
+                        images_by_data,
+                        (
+                            data_name,
+                            sample_name,
+                            f"{data_name}の解析結果の形式が不正です。",
+                            err_out,
+                        ),
+                    )
+                series = _deserialize_series(series_buf)
+                _ensure_result_annotations(series, data_name, sample_name)
+                chunk_results.append(series)
+            return chunk_results, images_by_data, None
+
+        with ThreadPoolExecutor(max_workers=process_count) as executor:
+            chunk_results = list(executor.map(_run_chunk, target_chunks))
+
+        errors: list[tuple[str, str, str, str]] = []
+        results: list[pd.Series] = []
+        collected_images: dict[str, dict[str, BytesIO]] = {}
+
+        for series_list, images_by_data, err in chunk_results:
+            for data_name, images in images_by_data.items():
+                lane_images = collected_images.setdefault(data_name, {})
+                lane_images.update(images)
+            if err:
+                errors.append(err)
+            else:
+                results.extend(series_list)
+
+        if errors:
+            if output_dir is not None and collected_images:
+                _save_images_to_dir(
+                    _flatten_images_by_data(collected_images),
+                    output_dir,
+                )
+            lanes = []
+            for data_name, sample_name, err_msg, err_out in errors:
+                header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
+                footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
+                stderr.write(
+                    "\n".join(
+                        [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
+                    ).encode("utf-8")
+                )
+                lanes.append(f"- {data_name} ({sample_name})")
+            stderr.flush()
+            exit_with_error(
+                ExitCodes.PROCESSING_ERROR,
+                "\n".join(["解析中にエラーが発生しました。", *lanes]),
+                stdout,
+                stderr,
+            )
+
+        return pd.DataFrame(results), collected_images
 
 
 def read_context[
@@ -1415,8 +1117,7 @@ def read_context[
     _stdout: IO[bytes] = stdout or sys.stdout.buffer
     _stderr: IO[bytes] = sys.stderr.buffer
     interactivity = get_interactivity()
-    # 分散/サブプロセス実行では、呼び出し側が環境変数で実行フェーズを指定する。
-    mode = os.getenv("ANALYSISRUN_MODE")
+    env_mode = os.getenv("ANALYSISRUN_MODE")
 
     try:
         specs = _get_image_analysis_specs(image_analysis_results)
@@ -1431,67 +1132,11 @@ def read_context[
             _stderr,
             exc,
         )
-    LocalInputModel = InputModel[params, image_analysis_results_input_model]
-    AnalysisInput = AnalysisInputModel[params, image_analysis_results_input_model]
-    PostprocessInput = PostprocessInputModel[params]
-
-    # 画像解析結果は 1..12 lane を前提としている（現状は固定）。
+    RuntimeInputModel = InputModel[params, image_analysis_results_input_model]
     field_numbers = [i + 1 for i in range(12)]
     output_dir_path = Path(output_dir) if output_dir else None
-    cleansed_data: dict[str, CleansedData] | None = None
-    raw_data: dict[str, pd.DataFrame] | None = None
-    sample_pairs: list[tuple[str, str]] | None = None
-    params_value: Params | None = None
-    output_impl: Output = _NullOutput()
-    ctx_state: (
-        _AnalysisState[Params, BaseModel]
-        | _AnalyzeSeqState[Params, BaseModel]
-        | _PostprocessState[Params]
-        | _SequentialState
-        | _ParallelState
-    )
 
-    if mode == "analyze":
-        try:
-            tar_dict = read_tar_as_dict(_stdin)
-            tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
-            parsed = AnalysisInput(**tar_dict)
-            params_value = parsed.params
-        except Exception as exc:
-            exit_with_error(
-                ExitCodes.INVALID_USAGE,
-                "入力データの読み込みに失敗しました。入力形式を確認してください。",
-                _stdout,
-                _stderr,
-                exc,
-            )
-        ctx_state = _AnalysisState(
-            stdout=_stdout,
-            stderr=_stderr,
-            parsed_input=parsed,
-            specs=specs,
-            field_numbers=field_numbers,
-        )
-    elif mode == "postprocess":
-        try:
-            tar_dict = read_tar_as_dict(_stdin)
-            tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
-            parsed = PostprocessInput(**tar_dict)
-            params_value = parsed.params
-        except Exception as exc:
-            exit_with_error(
-                ExitCodes.INVALID_USAGE,
-                "入力データの読み込みに失敗しました。入力形式を確認してください。",
-                _stdout,
-                _stderr,
-                exc,
-            )
-        ctx_state = _PostprocessState(
-            stdout=_stdout,
-            stderr=_stderr,
-            parsed_input=parsed,
-        )
-    elif mode == "analyzeseq":
+    if env_mode == "analyzeseq":
         # 複数ターゲットのシーケンシャル解析モード
         try:
             tar_dict = read_tar_as_dict(_stdin)
@@ -1502,7 +1147,6 @@ def read_context[
                 params, image_analysis_results_input_model
             ]
             parsed = AnalyzeSeqInput(**tar_dict)
-            params_value = parsed.params
         except Exception as exc:
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
@@ -1511,25 +1155,47 @@ def read_context[
                 _stderr,
                 exc,
             )
-        ctx_state = _AnalyzeSeqState(
-            stdout=_stdout,
-            stderr=_stderr,
-            parsed_input=parsed,
-            field_numbers=field_numbers,
+        return AnalysisContext[Params, ImageAnalysisResults](
+            params=parsed.params,
+            image_analysis_results=image_analysis_results,
+            output=_NullOutput(),
+            state=_AnalyzeSeqState(
+                stdout=_stdout,
+                stderr=_stderr,
+                parsed_input=parsed,
+                field_numbers=field_numbers,
+            ),
         )
-    elif mode == "showschema":
+
+    elif env_mode == "showschema":
         _stdout.write(b"{}")
         _stdout.flush()
         raise SystemExit(0)
-    else:
-        if interactivity is None:
-            exit_with_error(
-                ExitCodes.INVALID_USAGE,
-                "ANALYSISRUN_MODE環境変数に実行モードが指定されていません。",
+
+    elif env_mode is not None:
+        exit_with_error(
+            ExitCodes.INVALID_USAGE,
+            f"未対応のANALYSISRUN_MODEです: {env_mode}",
+            _stdout,
+            _stderr,
+        )
+
+    mode: Literal["sequential", "parallel-entrypoint", "parallel-entrypoint-streaming"]
+    if interactivity is None:
+            mode = "parallel-entrypoint-streaming"
+            try:
+                tar_dict = read_tar_as_dict(_stdin)
+                tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
+                runtime_input = RuntimeInputModel(**tar_dict)
+            except Exception as exc:
+                exit_with_error(
+                    ExitCodes.INVALID_USAGE,
+                "入力データの読み込みに失敗しました。入力形式を確認してください。",
                 _stdout,
                 _stderr,
+                exc,
             )
-
+    else:
         mode = "sequential" if interactivity == "notebook" else "parallel-entrypoint"
         if mode == "sequential" and manual_input is None:
             exit_with_error(
@@ -1545,7 +1211,7 @@ def read_context[
                 iar_input = image_analysis_results_input_model(
                     **manual_input.image_analysis_results
                 )
-                local_input = LocalInputModel(
+                runtime_input = RuntimeInputModel(
                     image_analysis_results=iar_input,
                     sample_names=manual_input.sample_names,  # type: ignore
                     params=manual_input.params,
@@ -1559,62 +1225,71 @@ def read_context[
                     exc,
                 )
         else:
-            # CLI等ではインタラクティブな入力を通じてLocalInputModelを組み立てる。
-            local_input = scan_model_input(LocalInputModel)
+            # CLI等ではインタラクティブな入力を通じてRuntimeInputModelを組み立てる。
+            runtime_input = scan_model_input(RuntimeInputModel)
 
-        params_value = local_input.params
+    raw_data = _load_image_results_raw(
+        runtime_input.image_analysis_results,
+        serialization="csv",
+    )
+    sample_pairs = [
+        (data, sample)
+        for data, sample in read_dict(
+            runtime_input.sample_names.unwrap(),
+            key="data",
+            value="sample",
+        ).items()
+    ]
+    if not sample_pairs:
+        exit_with_error(
+            ExitCodes.INVALID_USAGE,
+            "サンプル名CSVファイルが空です。",
+            _stdout,
+            _stderr,
+        )
+
+    if mode == "sequential":
         if output_dir_path is None:
-            output_dir_path = _derive_output_dir(local_input.image_analysis_results)
+            output_dir_path = _derive_output_dir(runtime_input.image_analysis_results)
         output_dir_path.mkdir(parents=True, exist_ok=True)
         output_impl = _FileOutput(output_dir_path)
-
-        raw_data = _load_image_results_raw(
-            local_input.image_analysis_results,
-            serialization="csv",
-        )
-        if mode == "sequential":
-            cleansed_data = {
-                name: _apply_cleansing_pipeline(df, specs[name])
-                for name, df in raw_data.items()
-            }
-        sample_pairs = [
-            (data, sample)
-            for data, sample in read_dict(
-                local_input.sample_names.unwrap(),
-                key="data",
-                value="sample",
-            ).items()
-        ]
-        if not sample_pairs:
-            exit_with_error(
-                ExitCodes.INVALID_USAGE,
-                "サンプル名CSVファイルが空です。",
-                _stdout,
-                _stderr,
-            )
-
-        if mode == "sequential":
-            assert cleansed_data is not None
-            assert raw_data is not None
-            ctx_state = _SequentialState(
+        cleansed_data = {
+            name: _apply_cleansing_pipeline(df, specs[name])
+            for name, df in raw_data.items()
+        }
+        return AnalysisContext[Params, ImageAnalysisResults](
+            params=runtime_input.params,
+            image_analysis_results=image_analysis_results,
+            output=output_impl,
+            state=_SequentialState(
                 stdout=_stdout,
                 stderr=_stderr,
                 raw_data=raw_data,
                 cleansed_data=cleansed_data,
                 sample_pairs=sample_pairs,
                 field_numbers=field_numbers,
-            )
-        else:
-            assert raw_data is not None and output_dir_path is not None
-            entrypoint = get_entrypoint()
-            if entrypoint is None:
-                exit_with_error(
-                    ExitCodes.INVALID_USAGE,
-                    "エントリーポイントとなるスクリプトのパス取得に失敗したため、並列実行させることができません。",
-                    _stdout,
-                    _stderr,
-                )
-            ctx_state = _ParallelState(
+            ),
+        )
+
+    entrypoint = get_entrypoint()
+    if entrypoint is None:
+        exit_with_error(
+            ExitCodes.INVALID_USAGE,
+            "エントリーポイントとなるスクリプトのパス取得に失敗したため、並列実行させることができません。",
+            _stdout,
+            _stderr,
+        )
+
+    if mode == "parallel-entrypoint":
+        if output_dir_path is None:
+            output_dir_path = _derive_output_dir(runtime_input.image_analysis_results)
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+        output_impl = _FileOutput(output_dir_path)
+        return AnalysisContext[Params, ImageAnalysisResults](
+            params=runtime_input.params,
+            image_analysis_results=image_analysis_results,
+            output=output_impl,
+            state=_ParallelState(
                 stdout=_stdout,
                 stderr=_stderr,
                 raw_data=raw_data,
@@ -1622,15 +1297,22 @@ def read_context[
                 output_dir=output_dir_path,
                 entrypoint=entrypoint,
                 field_numbers=field_numbers,
-            )
+            ),
+        )
 
-    ctx = AnalysisContext[Params, ImageAnalysisResults](
-        params=params_value,
+    return AnalysisContext[Params, ImageAnalysisResults](
+        params=runtime_input.params,
         image_analysis_results=image_analysis_results,
-        output=output_impl,
-        state=ctx_state,
+        output=_NullOutput(),
+        state=_ParallelStreamingState(
+            stdout=_stdout,
+            stderr=_stderr,
+            raw_data=raw_data,
+            sample_pairs=sample_pairs,
+            entrypoint=entrypoint,
+            field_numbers=field_numbers,
+        ),
     )
-    return ctx
 
 
 class _TarStreamingOutput(Output):
@@ -1870,24 +1552,32 @@ def _derive_output_dir(image_analysis_results_model: BaseModel) -> Path:
     return Path.cwd()
 
 
-def _extract_images_from_tar_dict(tar_dict: dict[str, Any]) -> dict[str, BytesIO]:
+def _extract_images_by_data_from_tar_dict(
+    tar_dict: dict[str, Any],
+) -> dict[str, dict[str, BytesIO]]:
+    images_by_data: dict[str, dict[str, BytesIO]] = {}
+    for data_name, node in tar_dict.items():
+        if data_name == "error" or not isinstance(node, dict):
+            continue
+        images = node.get("images")
+        if not isinstance(images, dict):
+            continue
+        lane_images: dict[str, BytesIO] = {}
+        for image_name, value in images.items():
+            if isinstance(value, BytesIO):
+                lane_images[image_name] = value
+        if lane_images:
+            images_by_data[str(data_name)] = lane_images
+    return images_by_data
+
+
+def _flatten_images_by_data(
+    images_by_data: dict[str, dict[str, BytesIO]],
+) -> dict[str, BytesIO]:
     images: dict[str, BytesIO] = {}
-
-    def _collect(node: Any, prefix: str = "") -> None:
-        if not isinstance(node, dict):
-            return
-        images_entry = node.get("images")
-        if isinstance(images_entry, dict):
-            for name, value in images_entry.items():
-                if isinstance(value, BytesIO):
-                    images[name] = value
-        for key, value in node.items():
-            if key == "images":
-                continue
-            next_prefix = f"{prefix}/{key}" if prefix else key
-            _collect(value, next_prefix)
-
-    _collect(tar_dict)
+    for lane_images in images_by_data.values():
+        for image_name, value in lane_images.items():
+            images[image_name] = value
     return images
 
 
@@ -1978,21 +1668,10 @@ def _try_read_tar_from_bytes(data: bytes) -> dict[str, Any] | None:
         return None
 
 
-def _extract_error_and_images_from_process(
-    proc: subprocess.CompletedProcess[bytes],
-) -> tuple[Exception | None, dict[str, BytesIO], str]:
-    stderr_text = proc.stderr.decode("utf-8", errors="ignore")
-    tar_result = _try_read_tar_from_bytes(proc.stdout)
-    if isinstance(tar_result, dict):
-        images = _extract_images_from_tar_dict(tar_result)
-        error_str = tar_result.get("error")
-        if error_str:
-            return Exception(error_str), images, stderr_text
-        return None, images, stderr_text
-    return None, {}, stderr_text
-
-
-def _build_postprocess_tar_entries(result_df: pd.DataFrame) -> dict[str, BytesIO]:
+def _build_parallel_streaming_tar_entries(
+    result_df: pd.DataFrame,
+    images_by_data: dict[str, dict[str, BytesIO]],
+) -> dict[str, BytesIO]:
     csv_buf = BytesIO()
     result_df = result_df.astype(str)
     result_df.to_csv(csv_buf, index=False)
@@ -2004,5 +1683,9 @@ def _build_postprocess_tar_entries(result_df: pd.DataFrame) -> dict[str, BytesIO
         json_buf = BytesIO()
         json_buf.write(row.to_json().encode("utf-8"))
         json_buf.seek(0)
-        entries[f"result_json/{str(data_name)}"] = json_buf
+        entries[f"{str(data_name)}/result_json"] = json_buf
+    for data_name, lane_images in images_by_data.items():
+        for image_name, buf in lane_images.items():
+            buf.seek(0)
+            entries[f"{data_name}/images/{image_name}"] = BytesIO(buf.read())
     return entries

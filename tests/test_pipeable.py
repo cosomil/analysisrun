@@ -86,6 +86,21 @@ def _write_samples_csv(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
     return p
 
 
+def _build_streaming_input_tar(
+    rows: list[tuple[str, str]],
+    params: Params | None = None,
+) -> BytesIO:
+    sample_buf = _dump_csv(pd.DataFrame(rows, columns=["data", "sample"]))
+    image_buf = _dump_csv(pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV))
+    return create_tar_from_dict(
+        {
+            "params": (params or Params()).model_dump_json(),
+            "sample_names": sample_buf,
+            "image_analysis_results/activity_spots": image_buf,
+        }
+    )
+
+
 def test_create_image_analysis_results_input_model_requires_spec():
     class InvalidImageResults(NamedTuple):
         activity_spots: Fields
@@ -138,277 +153,186 @@ def test_run_analysis_sequential_with_manual_input(monkeypatch):
     assert result_df["norm"].max() == pytest.approx(1.0)
 
 
-def test_run_analysis_only_outputs_tar(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
+def test_parallel_entrypoint_streaming_outputs_tar(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
+
+    import analysisrun.pipeable as pipeable
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+    monkeypatch.setattr(pipeable.os, "cpu_count", lambda: 2)
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        assert cmd == [sys.executable, str(entrypoint)]
+        assert env.get("ANALYSISRUN_MODE") == "analyzeseq"
+        tar_in = read_tar_as_dict(BytesIO(input))
+        targets = json.loads(tar_in["targets"])
+        out: dict[str, BytesIO] = {}
+        for data_name, sample_name in targets.items():
+            out[f"{data_name}/analysis_result"] = _dump_csv(
+                pd.DataFrame(
+                    [
+                        {
+                            "data_name": data_name,
+                            "sample_name": sample_name,
+                            "total_value": 2,
+                        }
+                    ]
+                )
+            )
+            out[f"{data_name}/images/plot.png"] = BytesIO(b"fake-image")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=create_tar_from_dict(out).getvalue(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
     stdout_buf = BytesIO()
-
-    tar_buf = create_tar_from_dict(
-        {
-            "data_name": "0000",
-            "sample_name": "SampleA",
-            "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_pickle_df(
-                IMAGE_ANALYSIS_RESULT_CSV
-            ),
-        }
+    input_tar = _build_streaming_input_tar(
+        [("0000", "SampleA"), ("0001", "SampleB")],
+        Params(threshold=3),
     )
-
     ctx = read_context(
         Params,
         ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
+        stdin=BytesIO(input_tar.getvalue()),
         stdout=stdout_buf,
     )
-
-    def analyze(args):
-        df = args.image_analysis_results.activity_spots.data
-        fig = plt.figure()
-        plt.plot([0, 1], [0, 1])
-        args.output(fig, "plot.png", "png")
-        return pd.Series({"total_value": int(df["Value"].sum())})
+    assert ctx.mode == "parallel-entrypoint-streaming"
 
     with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis(analyze=analyze)
+        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
 
     assert excinfo.value.code == 0
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert "result_csv" in tar_result
+    assert "0000" in tar_result and "0001" in tar_result
+    assert "images" in tar_result["0000"]
+    assert "plot.png" in tar_result["0000"]["images"]
+    assert "result_json" in tar_result["0000"]
 
-    series_buf = tar_result["analysis_result"]
-    assert isinstance(series_buf, BytesIO)
-    df = pd.read_csv(series_buf, dtype={"data_name": str, "sample_name": str})
-    series = df.iloc[0]
-    filtered = pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV)
-    filtered = filtered[filtered["Entity"] == "Activity Spots"]
-    filtered = filtered[filtered["Filename"].str.contains("0000")]
-    assert series["total_value"] == int(filtered["Value"].sum())
-    assert series["data_name"] == "0000"
-    assert series["sample_name"] == "SampleA"
-
-    images = tar_result["images"]
-    assert "plot.png" in images
-    assert isinstance(images["plot.png"], BytesIO)
-    assert images["plot.png"].getbuffer().nbytes > 0
+    csv_df = pd.read_csv(tar_result["result_csv"], dtype=str)
+    assert list(csv_df.sort_values("data_name")["data_name"]) == ["0000", "0001"]
 
 
-def test_run_analysis_with_print_statements_doesnt_corrupt_output(monkeypatch, capsys):
-    """
-    解析処理中にprint文があっても標準出力が破損しないことを確認する。
-
-    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
-    print文が標準エラー出力に向かうことを確認する。
-    """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
-    stdout_buf = BytesIO()
-
-    tar_buf = create_tar_from_dict(
-        {
-            "data_name": "0000",
-            "sample_name": "SampleA",
-            "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_pickle_df(
-                IMAGE_ANALYSIS_RESULT_CSV
-            ),
-        }
-    )
-
-    ctx = read_context(
-        Params,
-        ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
-        stdout=stdout_buf,
-    )
-
-    def analyze(args):
-        # ユーザーコードにprint文が含まれているケース
-        print("Debug: Starting analysis")
-        df = args.image_analysis_results.activity_spots.data
-        print(f"Debug: Processing {len(df)} rows")
-        total = int(df["Value"].sum())
-        print(f"Debug: Total value is {total}")
-        return pd.Series({"total_value": total})
-
-    with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis(analyze=analyze)
-
-    assert excinfo.value.code == 0
-
-    # 標準出力はtarフォーマットとして正常に読み込めるべき
-    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-
-    series_buf = tar_result["analysis_result"]
-    assert isinstance(series_buf, BytesIO)
-    df = pd.read_csv(series_buf, dtype={"data_name": str, "sample_name": str})
-    series = df.iloc[0]
-
-    # 結果は正しく取得できるべき
-    filtered = pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV)
-    filtered = filtered[filtered["Entity"] == "Activity Spots"]
-    filtered = filtered[filtered["Filename"].str.contains("0000")]
-    assert series["total_value"] == int(filtered["Value"].sum())
-
-    # print文の出力は標準エラー出力に出ているべき
-    captured = capsys.readouterr()
-    assert "Debug: Starting analysis" in captured.err
-    assert "Debug: Processing" in captured.err
-    assert "Debug: Total value is" in captured.err
-
-
-def test_run_postprocess_only_outputs_tar(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
-    stdout_buf = BytesIO()
-
-    analysis_results = pd.DataFrame(
-        [
-            {"data_name": "0000", "sample_name": "SampleA", "total_value": 4},
-            {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
-        ]
-    )
-
-    tar_buf = create_tar_from_dict(
-        {
-            "analysis_results": {
-                "0": _dump_csv(analysis_results.iloc[[0]]),
-                "1": _dump_csv(analysis_results.iloc[[1]]),
-            },
-            "params": Params(threshold=5).model_dump_json(),
-        }
-    )
-
-    ctx = read_context(
-        Params,
-        ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
-        stdout=stdout_buf,
-    )
-
-    def analyze(args):
-        raise RuntimeError("analyze should not be called in postprocess only mode")
-
-    def postprocess(args):
-        df = args.analysis_results.copy()
-        df["scaled"] = df["total_value"] * args.params.threshold
-        return df
-
-    with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis(analyze=analyze, postprocess=postprocess)
-
-    assert excinfo.value.code == 0
-    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    csv_buf = tar_result["result_csv"]
-    assert isinstance(csv_buf, BytesIO)
-    csv_buf.seek(0)
-    csv_df = pd.read_csv(csv_buf)
-    assert list(csv_df["scaled"]) == [20, 30]
-
-    json_entries = tar_result["result_json"]
-    assert set(json_entries.keys()) == {"0000", "0001"}
-    first = json.loads(json_entries["0000"].getvalue())
-    assert first["scaled"] == "20"  # すべて文字列となる
-
-
-def test_run_postprocess_with_print_statements_doesnt_corrupt_output(
-    monkeypatch, capsys
+def test_parallel_entrypoint_streaming_postprocess_print_goes_to_stderr(
+    monkeypatch, tmp_path: Path, capsys
 ):
-    """
-    後処理中にprint文があっても標準出力が破損しないことを確認する。
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
 
-    print文の出力が標準出力に混入するとtarフォーマットが破損してパースできなくなるため、
-    print文が標準エラー出力に向かうことを確認する。
-    """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
-    stdout_buf = BytesIO()
+    import analysisrun.pipeable as pipeable
 
-    analysis_results = pd.DataFrame(
-        [
-            {"data_name": "0000", "sample_name": "SampleA", "total_value": 4},
-            {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
-        ]
-    )
-    tar_buf = create_tar_from_dict(
-        {
-            "analysis_results": {
-                "0": _dump_csv(analysis_results.iloc[[0]]),
-                "1": _dump_csv(pd.DataFrame(analysis_results.iloc[[1]])),
-            },
-            "params": Params(threshold=5).model_dump_json(),
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        targets = json.loads(tar_in["targets"])
+        data_name, sample_name = next(iter(targets.items()))
+        out = {
+            f"{data_name}/analysis_result": _dump_csv(
+                pd.DataFrame(
+                    [
+                        {
+                            "data_name": data_name,
+                            "sample_name": sample_name,
+                            "total_value": 4,
+                        }
+                    ]
+                )
+            )
         }
-    )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=create_tar_from_dict(out).getvalue(),
+            stderr=b"",
+        )
 
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
+    stdout_buf = BytesIO()
+    input_tar = _build_streaming_input_tar([("0000", "SampleA")], Params())
     ctx = read_context(
         Params,
         ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
+        stdin=BytesIO(input_tar.getvalue()),
         stdout=stdout_buf,
     )
 
-    def analyze(args):
-        raise RuntimeError("analyze should not be called in postprocess only mode")
-
     def postprocess(args):
-        print("Debug: Starting postprocess")
+        print("Debug: postprocess")
         df = args.analysis_results.copy()
-        print(f"Debug: Processing {len(df)} results")
         df["scaled"] = df["total_value"] * args.params.threshold
-        print("Debug: Scaled values calculated")
         return df
 
     with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis(analyze=analyze, postprocess=postprocess)
-
+        ctx.run_analysis(
+            analyze=lambda _: pd.Series({"unused": 0}),
+            postprocess=postprocess,
+        )
     assert excinfo.value.code == 0
 
-    # 標準出力はtarフォーマットとして正常に読み込めるべき
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    csv_buf = tar_result["result_csv"]
-    assert isinstance(csv_buf, BytesIO)
-    csv_buf.seek(0)
-    csv_df = pd.read_csv(csv_buf)
-    assert list(csv_df["scaled"]) == [20, 30]
-
-    # print文の出力は標準エラー出力に出ているべき
+    csv_df = pd.read_csv(tar_result["result_csv"])
+    assert list(csv_df["scaled"]) == [4]
     captured = capsys.readouterr()
-    assert "Debug: Starting postprocess" in captured.err
-    assert "Debug: Processing 2 results" in captured.err
-    assert "Debug: Scaled values calculated" in captured.err
+    assert "Debug: postprocess" in captured.err
 
 
-def test_run_postprocess_only_preserves_leading_zero_values(monkeypatch):
-    """postprocess-only で leading-zero を含む列が落ちないことを確認する。"""
+def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
 
-    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
+    import analysisrun.pipeable as pipeable
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        targets = json.loads(tar_in["targets"])
+        out: dict[str, BytesIO] = {}
+        for data_name, sample_name in targets.items():
+            out[f"{data_name}/analysis_result"] = _dump_csv(
+                pd.DataFrame(
+                    [
+                        {
+                            "data_name": data_name,
+                            "sample_name": sample_name,
+                            "barcode": "0012" if data_name == "0000" else "0100",
+                        }
+                    ]
+                )
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=create_tar_from_dict(out).getvalue(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+
     stdout_buf = BytesIO()
-
-    analysis_results = pd.DataFrame(
-        [
-            {
-                "data_name": "0000",
-                "sample_name": "SampleA",
-                "barcode": "0012",
-                "total_value": 4,
-            },
-            {
-                "data_name": "0001",
-                "sample_name": "SampleB",
-                "barcode": "0100",
-                "total_value": 6,
-            },
-        ]
+    input_tar = _build_streaming_input_tar(
+        [("0000", "SampleA"), ("0001", "SampleB")],
+        Params(),
     )
-
-    tar_buf = create_tar_from_dict(
-        {
-            "analysis_results": {
-                "0": _dump_csv(analysis_results.iloc[[0]]),
-                "1": _dump_csv(analysis_results.iloc[[1]]),
-            },
-            "params": Params(threshold=5).model_dump_json(),
-        }
-    )
-
     ctx = read_context(
         Params,
         ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
+        stdin=BytesIO(input_tar.getvalue()),
         stdout=stdout_buf,
     )
 
@@ -417,25 +341,34 @@ def test_run_postprocess_only_preserves_leading_zero_values(monkeypatch):
 
     assert excinfo.value.code == 0
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    csv_df = pd.read_csv(tar_result["result_csv"], dtype=str)
+    assert list(csv_df.sort_values("data_name")["barcode"]) == ["0012", "0100"]
 
-    csv_buf = tar_result["result_csv"]
-    assert isinstance(csv_buf, BytesIO)
-    csv_buf.seek(0)
-    csv_df = pd.read_csv(csv_buf, dtype=str)
-    assert list(csv_df["barcode"]) == ["0012", "0100"]
-
-    json_entries = tar_result["result_json"]
-    assert set(json_entries.keys()) == {"0000", "0001"}
-    first = json.loads(json_entries["0000"].getvalue())
-    second = json.loads(json_entries["0001"].getvalue())
+    first = json.loads(tar_result["0000"]["result_json"].getvalue())
+    second = json.loads(tar_result["0001"]["result_json"].getvalue())
     assert first["barcode"] == "0012"
     assert second["barcode"] == "0100"
 
 
-def test_read_context_noninteractive_requires_method_outputs_error_tar(monkeypatch):
-    """非対話かつ ANALYSISRUN_MODE 未指定なら、stdout に error tar を返して終了する。"""
-
+def test_read_context_noninteractive_invalid_stdin_tar_outputs_error_tar(monkeypatch):
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
+
+    stdout_buf = BytesIO()
+    with pytest.raises(SystemExit) as excinfo:
+        read_context(Params, ImageResults, stdin=BytesIO(b"not a tar"), stdout=stdout_buf)
+
+    assert excinfo.value.code == 2
+    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
+    assert tar_result["error"] == "入力データの読み込みに失敗しました。入力形式を確認してください。"
+
+
+@pytest.mark.parametrize("method", ["analyze", "postprocess"])
+def test_read_context_unsupported_distributed_mode_outputs_error_tar(
+    monkeypatch, method: str
+):
+    monkeypatch.setenv("ANALYSISRUN_MODE", method)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
@@ -445,37 +378,7 @@ def test_read_context_noninteractive_requires_method_outputs_error_tar(monkeypat
 
     assert excinfo.value.code == 2
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    assert "error" in tar_result
-    assert (
-        tar_result["error"]
-        == "ANALYSISRUN_MODE環境変数に実行モードが指定されていません。"
-    )
-
-
-@pytest.mark.parametrize("method", ["analyze", "postprocess"])
-def test_read_context_invalid_stdin_tar_in_distributed_mode(monkeypatch, method: str):
-    """analyze/postprocess モードで stdin の tar が壊れている場合は invalid usage として扱う。"""
-
-    monkeypatch.setenv("ANALYSISRUN_MODE", method)
-    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
-    _force_interactivity(monkeypatch, None)
-
-    stdout_buf = BytesIO()
-    with pytest.raises(SystemExit) as excinfo:
-        read_context(
-            Params,
-            ImageResults,
-            stdin=BytesIO(b"this is not a tar"),
-            stdout=stdout_buf,
-        )
-
-    assert excinfo.value.code == 2
-    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    assert "error" in tar_result
-    assert (
-        tar_result["error"]
-        == "入力データの読み込みに失敗しました。入力形式を確認してください。"
-    )
+    assert tar_result["error"] == f"未対応のANALYSISRUN_MODEです: {method}"
 
 
 def test_read_context_notebook_requires_manual_input(monkeypatch):
@@ -753,7 +656,7 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
     error_tar = create_tar_from_dict(
         {
             "error": child_error,
-            "images/error_plot.png": BytesIO(b"error-image"),
+            "0000/images/error_plot.png": BytesIO(b"error-image"),
         }
     )
 
@@ -1086,102 +989,77 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
     assert calls["count"] == 1
 
 
-def test_run_analysis_with_preprocess_analysis_only_outputs_tar(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
-    stdout_buf = BytesIO()
+def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
 
-    tar_buf = create_tar_from_dict(
-        {
-            "data_name": "0000",
-            "sample_name": "SampleA",
-            "params": Params(threshold=3).model_dump_json(),
-            "image_analysis_results/activity_spots": _load_pickle_df(
-                IMAGE_ANALYSIS_RESULT_CSV
-            ),
-        }
-    )
+    import analysisrun.pipeable as pipeable
 
-    ctx = read_context(
-        Params,
-        ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
-        stdout=stdout_buf,
-    )
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
 
-    def preprocess(args):
-        assert isinstance(args.image_analysis_results["activity_spots"], pd.DataFrame)
-        return {"scale": args.params.threshold}
+    def fake_run(cmd, *, input, stdout, stderr, env):
+        tar_in = read_tar_as_dict(BytesIO(input))
+        targets = json.loads(tar_in["targets"])
+        preprocessed = pickle.loads(tar_in["preprocessed_data"].getvalue())
+        assert preprocessed["multiplier"] == 3
 
-    def analyze(args):
-        df = args.image_analysis_results.activity_spots.data
-        return pd.Series(
-            {"total_value": int(df["Value"].sum() * args.preprocessed_data["scale"])}
+        out: dict[str, BytesIO] = {}
+        for data_name, sample_name in targets.items():
+            out[f"{data_name}/analysis_result"] = _dump_csv(
+                pd.DataFrame(
+                    [
+                        {
+                            "data_name": data_name,
+                            "sample_name": sample_name,
+                            "total_value": 2,
+                        }
+                    ]
+                )
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=create_tar_from_dict(out).getvalue(),
+            stderr=b"",
         )
 
-    with pytest.raises(SystemExit) as excinfo:
-        ctx.run_analysis_with_preprocess(preprocess=preprocess, analyze=analyze)
+    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
 
-    assert excinfo.value.code == 0
-    tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    assert "analysis_result" in tar_result
-    assert "preprocessed_data" in tar_result
-    preprocessed = pickle.loads(tar_result["preprocessed_data"].getvalue())
-    assert preprocessed == {"scale": 3}
-
-
-def test_run_analysis_with_preprocess_postprocess_only_outputs_tar(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_MODE", "postprocess")
     stdout_buf = BytesIO()
-
-    analysis_results = pd.DataFrame(
-        [
-            {"data_name": "0000", "sample_name": "SampleA", "total_value": 4},
-            {"data_name": "0001", "sample_name": "SampleB", "total_value": 6},
-        ]
+    input_tar = _build_streaming_input_tar(
+        [("0000", "SampleA"), ("0001", "SampleB")],
+        Params(),
     )
-
-    tar_buf = create_tar_from_dict(
-        {
-            "analysis_results": {
-                "0": _dump_csv(analysis_results.iloc[[0]]),
-                "1": _dump_csv(analysis_results.iloc[[1]]),
-            },
-            "preprocessed_data": _dump_pickle_obj(
-                {"multipliers": {"0000": 10, "0001": 100}}
-            ),
-            "params": Params(threshold=1).model_dump_json(),
-        }
-    )
-
     ctx = read_context(
         Params,
         ImageResults,
-        stdin=BytesIO(tar_buf.getvalue()),
+        stdin=BytesIO(input_tar.getvalue()),
         stdout=stdout_buf,
     )
+
+    def preprocess(_):
+        return {"multiplier": 3}
 
     def postprocess(args):
         df = args.analysis_results.copy()
-        df["scaled"] = df.apply(
-            lambda row: row["total_value"]
-            * args.preprocessed_data["multipliers"][row["data_name"]],
-            axis=1,
-        )
+        df["scaled"] = df["total_value"] * args.preprocessed_data["multiplier"]
         return df
 
     with pytest.raises(SystemExit) as excinfo:
         ctx.run_analysis_with_preprocess(
-            preprocess=lambda _: {"unused": True},
+            preprocess=preprocess,
             analyze=lambda _: pd.Series({"unused": 0}),
             postprocess=postprocess,
         )
 
     assert excinfo.value.code == 0
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    csv_buf = tar_result["result_csv"]
-    assert isinstance(csv_buf, BytesIO)
-    csv_df = pd.read_csv(csv_buf)
-    assert list(csv_df["scaled"]) == [40, 600]
+    csv_df = pd.read_csv(tar_result["result_csv"])
+    assert list(csv_df.sort_values("data_name")["scaled"]) == [6, 6]
 
 
 def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_data(

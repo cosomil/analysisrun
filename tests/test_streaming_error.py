@@ -3,7 +3,7 @@
 """
 from __future__ import annotations
 
-import os
+import json
 import pickle
 from io import BytesIO
 from pathlib import Path
@@ -54,13 +54,12 @@ def test_streaming_error_outputs_partial_images_and_error_entry(monkeypatch):
     画像が生成された後にエラーが発生した場合、生成済みの画像とerrorエントリの両方が
     TAR出力に含まれることを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzeseq")
     stdout_buf = BytesIO()
     
     tar_buf = create_tar_from_dict(
         {
-            "data_name": "0000",
-            "sample_name": "SampleA",
+            "targets": json.dumps({"0000": "SampleA"}),
             "params": Params(threshold=3).model_dump_json(),
             "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
@@ -104,13 +103,14 @@ def test_streaming_error_outputs_partial_images_and_error_entry(monkeypatch):
     assert "解析処理中にエラーが発生しました" in tar_result["error"]
     
     # 部分的な画像が含まれることを確認
-    assert "images" in tar_result
-    images = tar_result["images"]
+    assert "0000" in tar_result
+    assert "images" in tar_result["0000"]
+    images = tar_result["0000"]["images"]
     assert "image1.png" in images
     assert "image2.png" in images
     
     # analysis_resultは含まれないことを確認（エラーで中断されたため）
-    assert "analysis_result" not in tar_result
+    assert "analysis_result" not in tar_result["0000"]
 
 
 def test_streaming_tar_structure_order(monkeypatch):
@@ -119,13 +119,12 @@ def test_streaming_tar_structure_order(monkeypatch):
     
     画像が先に出力され、analysis_resultが最後に出力されることを確認する。
     """
-    monkeypatch.setenv("ANALYSISRUN_MODE", "analyze")
+    monkeypatch.setenv("ANALYSISRUN_MODE", "analyzeseq")
     stdout_buf = BytesIO()
     
     tar_buf = create_tar_from_dict(
         {
-            "data_name": "0000",
-            "sample_name": "SampleA",
+            "targets": json.dumps({"0000": "SampleA"}),
             "params": Params(threshold=3).model_dump_json(),
             "image_analysis_results/activity_spots": _load_pickle_df(
                 IMAGE_ANALYSIS_RESULT_CSV
@@ -161,10 +160,11 @@ def test_streaming_tar_structure_order(monkeypatch):
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
     
     # 全てのエントリが存在することを確認
-    assert "images" in tar_result
-    assert "plot1.png" in tar_result["images"]
-    assert "plot2.png" in tar_result["images"]
-    assert "analysis_result" in tar_result
+    assert "0000" in tar_result
+    assert "images" in tar_result["0000"]
+    assert "plot1.png" in tar_result["0000"]["images"]
+    assert "plot2.png" in tar_result["0000"]["images"]
+    assert "analysis_result" in tar_result["0000"]
     
     # errorエントリは存在しないことを確認
     assert "error" not in tar_result
