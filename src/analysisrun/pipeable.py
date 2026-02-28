@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from threading import Lock, Thread
 from typing import (
     IO,
     Any,
@@ -791,6 +792,18 @@ class AnalysisContext[
         state = self.state
         output_dir = state.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
+        image_write_lock = Lock()
+
+        def _save_streamed_image(
+            _data_name: str,
+            image_name: str,
+            image_bytes: bytes,
+            _image_type: Optional[str],
+        ) -> None:
+            # parallel-entrypoint では従来仕様どおりファイル名のみで保存する
+            with image_write_lock:
+                _save_image_bytes_to_dir(image_name, image_bytes, output_dir)
+
         result_df, images_by_data = self._run_parallel_entrypoint(
             raw_data=state.raw_data,
             sample_pairs=state.sample_pairs,
@@ -798,6 +811,7 @@ class AnalysisContext[
             stdout=state.stdout,
             stderr=state.stderr,
             output_dir=output_dir,
+            on_image=_save_streamed_image,
         )
         flat_images = _flatten_images_by_data(images_by_data)
         if flat_images:
@@ -828,6 +842,18 @@ class AnalysisContext[
         state = self.state
         output_dir = state.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
+        image_write_lock = Lock()
+
+        def _save_streamed_image(
+            _data_name: str,
+            image_name: str,
+            image_bytes: bytes,
+            _image_type: Optional[str],
+        ) -> None:
+            # parallel-entrypoint では従来仕様どおりファイル名のみで保存する
+            with image_write_lock:
+                _save_image_bytes_to_dir(image_name, image_bytes, output_dir)
+
         preprocessed_data = preprocess(
             PreprocessArgs(
                 self.params,
@@ -846,6 +872,7 @@ class AnalysisContext[
             stderr=state.stderr,
             preprocessed_data=preprocessed_data,
             output_dir=output_dir,
+            on_image=_save_streamed_image,
         )
         flat_images = _flatten_images_by_data(images_by_data)
         if flat_images:
@@ -871,23 +898,65 @@ class AnalysisContext[
     ) -> pd.DataFrame:
         assert isinstance(self.state, _ParallelStreamingState)
         state = self.state
-        result_df, images_by_data = self._run_parallel_entrypoint(
-            raw_data=state.raw_data,
-            sample_pairs=state.sample_pairs,
-            entrypoint=state.entrypoint,
-            stdout=state.stdout,
-            stderr=state.stderr,
-        )
-        if postprocess:
-            with redirect_stdout_to_stderr(stderr):
-                postprocessed = postprocess(PostprocessArgs(self.params, result_df))
-            if postprocessed is not None:
-                result_df = postprocessed
+        with tarfile.open(fileobj=stdout, mode="w|gz") as tar:
+            tar_lock = Lock()
 
-        tar_buf = create_tar_from_dict(
-            _build_parallel_streaming_tar_entries(result_df, images_by_data)
-        )
-        stdout.write(tar_buf.getvalue())
+            def _stream_image(
+                data_name: str,
+                image_name: str,
+                image_bytes: bytes,
+                image_type: Optional[str],
+            ) -> None:
+                with tar_lock:
+                    _add_tar_binary_entry(
+                        tar,
+                        f"{data_name}/images/{image_name}",
+                        image_bytes,
+                        image_type=image_type,
+                    )
+                    stdout.flush()
+
+            try:
+                result_df, errors = self._run_parallel_entrypoint_streaming(
+                    raw_data=state.raw_data,
+                    sample_pairs=state.sample_pairs,
+                    entrypoint=state.entrypoint,
+                    preprocessed_data=None,
+                    on_image=_stream_image,
+                )
+                if errors:
+                    _write_parallel_chunk_errors(stderr, errors)
+                    lanes = [
+                        f"- {data_name} ({sample_name})"
+                        for data_name, sample_name, _, _ in errors
+                    ]
+                    exit_with_error_streaming(
+                        ExitCodes.PROCESSING_ERROR,
+                        "\n".join(["解析中にエラーが発生しました。", *lanes]),
+                        tar,
+                        stderr,
+                    )
+
+                if postprocess:
+                    with redirect_stdout_to_stderr(stderr):
+                        postprocessed = postprocess(
+                            PostprocessArgs(self.params, result_df)
+                        )
+                    if postprocessed is not None:
+                        result_df = postprocessed
+
+                _write_parallel_streaming_result_entries(tar, result_df)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                exit_with_error_streaming(
+                    ExitCodes.PROCESSING_ERROR,
+                    "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
+                    tar,
+                    stderr,
+                    exc,
+                )
+
         stdout.flush()
         sys.exit(0)
 
@@ -910,44 +979,169 @@ class AnalysisContext[
     ) -> pd.DataFrame:
         assert isinstance(self.state, _ParallelStreamingState)
         state = self.state
-        with redirect_stdout_to_stderr(stderr):
-            preprocessed_data = preprocess(
-                PreprocessArgs(
-                    self.params,
-                    state.raw_data,
-                    {
-                        data_name: sample_name
-                        for data_name, sample_name in state.sample_pairs
-                    },
-                )
-            )
-        result_df, images_by_data = self._run_parallel_entrypoint(
-            raw_data=state.raw_data,
-            sample_pairs=state.sample_pairs,
-            entrypoint=state.entrypoint,
-            stdout=state.stdout,
-            stderr=state.stderr,
-            preprocessed_data=preprocessed_data,
-        )
+        with tarfile.open(fileobj=stdout, mode="w|gz") as tar:
+            tar_lock = Lock()
 
-        if postprocess:
-            with redirect_stdout_to_stderr(stderr):
-                postprocessed = postprocess(
-                    PostprocessArgsWithPreprocess(
-                        self.params,
-                        result_df,
-                        preprocessed_data,
+            def _stream_image(
+                data_name: str,
+                image_name: str,
+                image_bytes: bytes,
+                image_type: Optional[str],
+            ) -> None:
+                with tar_lock:
+                    _add_tar_binary_entry(
+                        tar,
+                        f"{data_name}/images/{image_name}",
+                        image_bytes,
+                        image_type=image_type,
                     )
-                )
-            if postprocessed is not None:
-                result_df = postprocessed
+                    stdout.flush()
 
-        tar_buf = create_tar_from_dict(
-            _build_parallel_streaming_tar_entries(result_df, images_by_data)
-        )
-        stdout.write(tar_buf.getvalue())
+            try:
+                with redirect_stdout_to_stderr(stderr):
+                    preprocessed_data = preprocess(
+                        PreprocessArgs(
+                            self.params,
+                            state.raw_data,
+                            {
+                                data_name: sample_name
+                                for data_name, sample_name in state.sample_pairs
+                            },
+                        )
+                    )
+
+                result_df, errors = self._run_parallel_entrypoint_streaming(
+                    raw_data=state.raw_data,
+                    sample_pairs=state.sample_pairs,
+                    entrypoint=state.entrypoint,
+                    preprocessed_data=preprocessed_data,
+                    on_image=_stream_image,
+                )
+                if errors:
+                    _write_parallel_chunk_errors(stderr, errors)
+                    lanes = [
+                        f"- {data_name} ({sample_name})"
+                        for data_name, sample_name, _, _ in errors
+                    ]
+                    exit_with_error_streaming(
+                        ExitCodes.PROCESSING_ERROR,
+                        "\n".join(["解析中にエラーが発生しました。", *lanes]),
+                        tar,
+                        stderr,
+                    )
+
+                if postprocess:
+                    with redirect_stdout_to_stderr(stderr):
+                        postprocessed = postprocess(
+                            PostprocessArgsWithPreprocess(
+                                self.params,
+                                result_df,
+                                preprocessed_data,
+                            )
+                        )
+                    if postprocessed is not None:
+                        result_df = postprocessed
+
+                _write_parallel_streaming_result_entries(tar, result_df)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                exit_with_error_streaming(
+                    ExitCodes.PROCESSING_ERROR,
+                    "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
+                    tar,
+                    stderr,
+                    exc,
+                )
+
         stdout.flush()
         sys.exit(0)
+
+    def _run_parallel_entrypoint_streaming(
+        self,
+        raw_data: dict[str, pd.DataFrame],
+        sample_pairs: list[tuple[str, str]],
+        entrypoint: Path,
+        preprocessed_data: Any | None,
+        on_image: Callable[[str, str, bytes, Optional[str]], None],
+    ) -> tuple[pd.DataFrame, list[tuple[str, str, str, str]]]:
+        if not sample_pairs:
+            return pd.DataFrame(), []
+
+        params_payload = self.params.model_dump_json()
+        core_count = os.cpu_count() or 1
+        process_count = min(len(sample_pairs), max(core_count, 1))
+        target_chunks = _split_evenly_in_order(sample_pairs, process_count)
+
+        def _run_chunk(
+            targets: list[tuple[str, str]],
+        ) -> tuple[list[pd.Series], Optional[tuple[str, str, str, str]]]:
+            tar_buf = _build_analyze_seq_tar_buffer(
+                params_payload,
+                targets,
+                raw_data,
+                preprocessed_data=preprocessed_data,
+            )
+            result = _run_entrypoint_with_tar_streaming(
+                entrypoint,
+                tar_buf,
+                "analyzeseq",
+                on_image=on_image,
+            )
+            err_out = result.stderr
+
+            if result.returncode != 0:
+                err_msg = result.error or "不明なエラーが発生しました。"
+                failed_data, failed_sample = _infer_failed_target(err_msg, targets)
+                return [], (failed_data, failed_sample, err_msg, err_out)
+
+            if not result.tar_read_ok:
+                data_name, sample_name = targets[0]
+                return (
+                    [],
+                    (
+                        data_name,
+                        sample_name,
+                        f"{data_name}の解析結果の読み込みに失敗しました",
+                        err_out,
+                    ),
+                )
+
+            if result.error is not None:
+                failed_data, failed_sample = _infer_failed_target(result.error, targets)
+                return [], (failed_data, failed_sample, result.error, err_out)
+
+            chunk_results: list[pd.Series] = []
+            for data_name, sample_name in targets:
+                series_buf = result.analysis_results.get(data_name)
+                if not isinstance(series_buf, BytesIO):
+                    return (
+                        [],
+                        (
+                            data_name,
+                            sample_name,
+                            f"{data_name}の解析結果の形式が不正です。",
+                            err_out,
+                        ),
+                    )
+                series = _deserialize_series(series_buf)
+                _ensure_result_annotations(series, data_name, sample_name)
+                chunk_results.append(series)
+            return chunk_results, None
+
+        with ThreadPoolExecutor(max_workers=process_count) as executor:
+            chunk_results = list(executor.map(_run_chunk, target_chunks))
+
+        errors: list[tuple[str, str, str, str]] = []
+        results: list[pd.Series] = []
+
+        for series_list, err in chunk_results:
+            if err:
+                errors.append(err)
+            else:
+                results.extend(series_list)
+
+        return pd.DataFrame(results), errors
 
     def _run_parallel_entrypoint(
         self,
@@ -958,6 +1152,7 @@ class AnalysisContext[
         stderr: IO[bytes],
         preprocessed_data: Any | None = None,
         output_dir: Path | None = None,
+        on_image: Optional[Callable[[str, str, bytes, Optional[str]], None]] = None,
     ) -> tuple[pd.DataFrame, dict[str, dict[str, BytesIO]]]:
         if not sample_pairs:
             return pd.DataFrame(), {}
@@ -980,6 +1175,61 @@ class AnalysisContext[
                 raw_data,
                 preprocessed_data=preprocessed_data,
             )
+            if on_image is not None:
+                result = _run_entrypoint_with_tar_streaming(
+                    entrypoint,
+                    tar_buf,
+                    "analyzeseq",
+                    on_image=on_image,
+                )
+                err_out = result.stderr
+                images_by_data: dict[str, dict[str, BytesIO]] = {}
+
+                if result.returncode != 0:
+                    err_msg = result.error or "不明なエラーが発生しました。"
+                    failed_data, failed_sample = _infer_failed_target(err_msg, targets)
+                    return [], images_by_data, (failed_data, failed_sample, err_msg, err_out)
+
+                if not result.tar_read_ok:
+                    data_name, sample_name = targets[0]
+                    return (
+                        [],
+                        images_by_data,
+                        (
+                            data_name,
+                            sample_name,
+                            f"{data_name}の解析結果の読み込みに失敗しました",
+                            err_out,
+                        ),
+                    )
+
+                if result.error is not None:
+                    failed_data, failed_sample = _infer_failed_target(result.error, targets)
+                    return (
+                        [],
+                        images_by_data,
+                        (failed_data, failed_sample, result.error, err_out),
+                    )
+
+                chunk_results: list[pd.Series] = []
+                for data_name, sample_name in targets:
+                    series_buf = result.analysis_results.get(data_name)
+                    if not isinstance(series_buf, BytesIO):
+                        return (
+                            [],
+                            images_by_data,
+                            (
+                                data_name,
+                                sample_name,
+                                f"{data_name}の解析結果の形式が不正です。",
+                                err_out,
+                            ),
+                        )
+                    series = _deserialize_series(series_buf)
+                    _ensure_result_annotations(series, data_name, sample_name)
+                    chunk_results.append(series)
+                return chunk_results, images_by_data, None
+
             proc = _run_entrypoint_with_tar(entrypoint, tar_buf, "analyzeseq")
             err_out = proc.stderr.decode("utf-8", errors="ignore")
             tar_result = _try_read_tar_from_bytes(proc.stdout)
@@ -1069,17 +1319,8 @@ class AnalysisContext[
                     _flatten_images_by_data(collected_images),
                     output_dir,
                 )
-            lanes = []
-            for data_name, sample_name, err_msg, err_out in errors:
-                header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
-                footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
-                stderr.write(
-                    "\n".join(
-                        [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
-                    ).encode("utf-8")
-                )
-                lanes.append(f"- {data_name} ({sample_name})")
-            stderr.flush()
+            _write_parallel_chunk_errors(stderr, errors)
+            lanes = [f"- {data_name} ({sample_name})" for data_name, sample_name, _, _ in errors]
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
                 "\n".join(["解析中にエラーが発生しました。", *lanes]),
@@ -1639,10 +1880,14 @@ def _serialize_dataframe_pickle(df: pd.DataFrame) -> BytesIO:
 def _save_images_to_dir(images: dict[str, BytesIO], output_dir: Path) -> None:
     for name, buf in images.items():
         buf.seek(0)
-        path = output_dir / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(buf.read())
+        _save_image_bytes_to_dir(name, buf.read(), output_dir)
+
+
+def _save_image_bytes_to_dir(name: str, image_bytes: bytes, output_dir: Path) -> None:
+    path = output_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(image_bytes)
 
 
 def _run_entrypoint_with_tar(
@@ -1661,6 +1906,95 @@ def _run_entrypoint_with_tar(
     )
 
 
+@dataclass
+class _AnalyzeSeqStreamingResult:
+    returncode: int
+    stderr: str
+    analysis_results: dict[str, BytesIO]
+    error: Optional[str]
+    tar_read_ok: bool
+
+
+def _run_entrypoint_with_tar_streaming(
+    entrypoint: Path,
+    tar_buf: BytesIO,
+    mode: str,
+    on_image: Callable[[str, str, bytes, Optional[str]], None],
+) -> _AnalyzeSeqStreamingResult:
+    env = os.environ.copy()
+    env["ANALYSISRUN_MODE"] = mode
+
+    proc = subprocess.Popen(
+        [sys.executable, str(entrypoint)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+    stderr_chunks = bytearray()
+
+    def _drain_stderr() -> None:
+        if proc.stderr is None:
+            return
+        stderr_chunks.extend(proc.stderr.read())
+
+    stderr_reader = Thread(target=_drain_stderr, daemon=True)
+    stderr_reader.start()
+
+    if proc.stdin is not None:
+        try:
+            proc.stdin.write(tar_buf.getvalue())
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass
+        finally:
+            proc.stdin.close()
+
+    analysis_results: dict[str, BytesIO] = {}
+    error_message: Optional[str] = None
+    tar_read_ok = True
+
+    if proc.stdout is not None:
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode="r|*") as tar:
+                for member in tar:
+                    if not member.isfile():
+                        continue
+                    file_obj = tar.extractfile(member)
+                    if file_obj is None:
+                        continue
+                    content = file_obj.read()
+                    if member.name == "error":
+                        error_message = content.decode("utf-8").strip()
+                        continue
+
+                    parts = member.name.split("/")
+                    if len(parts) == 2 and parts[1] == "analysis_result":
+                        analysis_results[parts[0]] = BytesIO(content)
+                        continue
+                    if len(parts) >= 3 and parts[1] == "images":
+                        image_name = "/".join(parts[2:])
+                        image_type = member.pax_headers.get("image_type")
+                        on_image(parts[0], image_name, content, image_type)
+        except Exception:
+            tar_read_ok = False
+        finally:
+            proc.stdout.close()
+
+    returncode = proc.wait()
+    stderr_reader.join()
+    stderr_text = stderr_chunks.decode("utf-8", errors="ignore")
+
+    return _AnalyzeSeqStreamingResult(
+        returncode=returncode,
+        stderr=stderr_text,
+        analysis_results=analysis_results,
+        error=error_message,
+        tar_read_ok=tar_read_ok,
+    )
+
+
 def _try_read_tar_from_bytes(data: bytes) -> dict[str, Any] | None:
     try:
         return read_tar_as_dict(BytesIO(data))
@@ -1668,24 +2002,47 @@ def _try_read_tar_from_bytes(data: bytes) -> dict[str, Any] | None:
         return None
 
 
-def _build_parallel_streaming_tar_entries(
+def _add_tar_binary_entry(
+    tar: tarfile.TarFile,
+    name: str,
+    content: bytes,
+    *,
+    image_type: Optional[str] = None,
+) -> None:
+    tar_info = tarfile.TarInfo(name=name)
+    tar_info.size = len(content)
+    pax_headers = {"is_file": "true"}
+    if image_type is not None:
+        pax_headers["image_type"] = image_type
+    tar_info.pax_headers = pax_headers
+    tar.addfile(tar_info, BytesIO(content))
+
+
+def _write_parallel_streaming_result_entries(
+    tar: tarfile.TarFile,
     result_df: pd.DataFrame,
-    images_by_data: dict[str, dict[str, BytesIO]],
-) -> dict[str, BytesIO]:
+) -> None:
     csv_buf = BytesIO()
     result_df = result_df.astype(str)
     result_df.to_csv(csv_buf, index=False)
-    csv_buf.seek(0)
+    _add_tar_binary_entry(tar, "result_csv", csv_buf.getvalue())
 
-    entries: dict[str, BytesIO] = {"result_csv": csv_buf}
     for idx, row in result_df.iterrows():
         data_name = row["data_name"] if "data_name" in row else idx
-        json_buf = BytesIO()
-        json_buf.write(row.to_json().encode("utf-8"))
-        json_buf.seek(0)
-        entries[f"{str(data_name)}/result_json"] = json_buf
-    for data_name, lane_images in images_by_data.items():
-        for image_name, buf in lane_images.items():
-            buf.seek(0)
-            entries[f"{data_name}/images/{image_name}"] = BytesIO(buf.read())
-    return entries
+        json_bytes = row.to_json().encode("utf-8")
+        _add_tar_binary_entry(tar, f"{str(data_name)}/result_json", json_bytes)
+
+
+def _write_parallel_chunk_errors(
+    stderr: IO[bytes],
+    errors: list[tuple[str, str, str, str]],
+) -> None:
+    for data_name, sample_name, err_msg, err_out in errors:
+        header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
+        footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
+        stderr.write(
+            "\n".join([header, err_msg.strip(), "", err_out.strip(), footer, "", ""]).encode(
+                "utf-8"
+            )
+        )
+    stderr.flush()

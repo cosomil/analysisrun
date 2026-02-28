@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
-import sys
+import tarfile
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,14 +165,15 @@ def test_parallel_entrypoint_streaming_outputs_tar(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
     monkeypatch.setattr(pipeable.os, "cpu_count", lambda: 2)
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        assert cmd == [sys.executable, str(entrypoint)]
-        assert env.get("ANALYSISRUN_MODE") == "analyzeseq"
-        tar_in = read_tar_as_dict(BytesIO(input))
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
-        out: dict[str, BytesIO] = {}
+        analysis_results: dict[str, BytesIO] = {}
         for data_name, sample_name in targets.items():
-            out[f"{data_name}/analysis_result"] = _dump_csv(
+            on_image(data_name, "plot.png", b"fake-image", "png")
+            analysis_results[data_name] = _dump_csv(
                 pd.DataFrame(
                     [
                         {
@@ -183,14 +184,19 @@ def test_parallel_entrypoint_streaming_outputs_tar(monkeypatch, tmp_path: Path):
                     ]
                 )
             )
-            out[f"{data_name}/images/plot.png"] = BytesIO(b"fake-image")
         return SimpleNamespace(
             returncode=0,
-            stdout=create_tar_from_dict(out).getvalue(),
-            stderr=b"",
+            stderr="",
+            analysis_results=analysis_results,
+            error=None,
+            tar_read_ok=True,
         )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     stdout_buf = BytesIO()
     input_tar = _build_streaming_input_tar(
@@ -233,30 +239,38 @@ def test_parallel_entrypoint_streaming_postprocess_print_goes_to_stderr(
     entrypoint.write_text("# dummy\n")
     monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
         data_name, sample_name = next(iter(targets.items()))
-        out = {
-            f"{data_name}/analysis_result": _dump_csv(
-                pd.DataFrame(
-                    [
-                        {
-                            "data_name": data_name,
-                            "sample_name": sample_name,
-                            "total_value": 4,
-                        }
-                    ]
-                )
-            )
-        }
+        on_image(data_name, "plot.png", b"postprocess-image", "png")
         return SimpleNamespace(
             returncode=0,
-            stdout=create_tar_from_dict(out).getvalue(),
-            stderr=b"",
+            stderr="",
+            analysis_results={
+                data_name: _dump_csv(
+                    pd.DataFrame(
+                        [
+                            {
+                                "data_name": data_name,
+                                "sample_name": sample_name,
+                                "total_value": 4,
+                            }
+                        ]
+                    )
+                )
+            },
+            error=None,
+            tar_read_ok=True,
         )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     stdout_buf = BytesIO()
     input_tar = _build_streaming_input_tar([("0000", "SampleA")], Params())
@@ -287,6 +301,76 @@ def test_parallel_entrypoint_streaming_postprocess_print_goes_to_stderr(
     assert "Debug: postprocess" in captured.err
 
 
+def test_parallel_entrypoint_streaming_writes_images_before_result_entries(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.delenv("PSEUDO_NBENV", raising=False)
+    _force_interactivity(monkeypatch, None)
+
+    import analysisrun.pipeable as pipeable
+
+    entrypoint = tmp_path / "entry.py"
+    entrypoint.write_text("# dummy\n")
+    monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
+
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
+        targets = json.loads(tar_in["targets"])
+        data_name, sample_name = next(iter(targets.items()))
+        on_image(data_name, "plot.png", b"streamed-image", "png")
+        return SimpleNamespace(
+            returncode=0,
+            stderr="",
+            analysis_results={
+                data_name: _dump_csv(
+                    pd.DataFrame(
+                        [
+                            {
+                                "data_name": data_name,
+                                "sample_name": sample_name,
+                                "total_value": 5,
+                            }
+                        ]
+                    )
+                )
+            },
+            error=None,
+            tar_read_ok=True,
+        )
+
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
+
+    stdout_buf = BytesIO()
+    input_tar = _build_streaming_input_tar([("0000", "SampleA")], Params())
+    ctx = read_context(
+        Params,
+        ImageResults,
+        stdin=BytesIO(input_tar.getvalue()),
+        stdout=stdout_buf,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
+
+    assert excinfo.value.code == 0
+    names: list[str] = []
+    with tarfile.open(fileobj=BytesIO(stdout_buf.getvalue()), mode="r|*") as tar:
+        for member in tar:
+            if member.isfile():
+                names.append(member.name)
+
+    assert "0000/images/plot.png" in names
+    assert "result_csv" in names
+    assert names.index("0000/images/plot.png") < names.index("result_csv")
+
+
 def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
     monkeypatch, tmp_path: Path
 ):
@@ -300,12 +384,15 @@ def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
     entrypoint.write_text("# dummy\n")
     monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
-        out: dict[str, BytesIO] = {}
+        analysis_results: dict[str, BytesIO] = {}
         for data_name, sample_name in targets.items():
-            out[f"{data_name}/analysis_result"] = _dump_csv(
+            on_image(data_name, "plot.png", b"leading-zero-image", "png")
+            analysis_results[data_name] = _dump_csv(
                 pd.DataFrame(
                     [
                         {
@@ -318,11 +405,17 @@ def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
             )
         return SimpleNamespace(
             returncode=0,
-            stdout=create_tar_from_dict(out).getvalue(),
-            stderr=b"",
+            stderr="",
+            analysis_results=analysis_results,
+            error=None,
+            tar_read_ok=True,
         )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     stdout_buf = BytesIO()
     input_tar = _build_streaming_input_tar(
@@ -357,11 +450,16 @@ def test_read_context_noninteractive_invalid_stdin_tar_outputs_error_tar(monkeyp
 
     stdout_buf = BytesIO()
     with pytest.raises(SystemExit) as excinfo:
-        read_context(Params, ImageResults, stdin=BytesIO(b"not a tar"), stdout=stdout_buf)
+        read_context(
+            Params, ImageResults, stdin=BytesIO(b"not a tar"), stdout=stdout_buf
+        )
 
     assert excinfo.value.code == 2
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
-    assert tar_result["error"] == "入力データの読み込みに失敗しました。入力形式を確認してください。"
+    assert (
+        tar_result["error"]
+        == "入力データの読み込みに失敗しました。入力形式を確認してください。"
+    )
 
 
 @pytest.mark.parametrize("method", ["analyze", "postprocess"])
@@ -396,7 +494,7 @@ def test_read_context_notebook_requires_manual_input(monkeypatch):
 def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
     monkeypatch, tmp_path: Path
 ):
-    """parallel-entrypoint で subprocess を呼び、env 注入と画像保存を行う。"""
+    """parallel-entrypoint で entrypoint 実行入力を組み立て、画像保存を行う。"""
 
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
@@ -417,13 +515,13 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
 
     called = {"count": 0}
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
         called["count"] += 1
-        assert cmd == [sys.executable, str(entrypoint)]
-        assert env.get("ANALYSISRUN_MODE") == "analyzeseq"
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
 
         # 入力 tar の基本構造（targets/params）が入っていることだけ確認
-        tar_in = read_tar_as_dict(BytesIO(input))
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
         assert targets == {"0000": "SampleA"}
         assert "params" in tar_in
@@ -434,16 +532,21 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
         assert isinstance(restored_df, pd.DataFrame)
         assert not restored_df.empty
 
+        on_image("0000", "plot.png", b"fake-image", "png")
         series_csv = b"total_value\n1\n"
-        tar_out = create_tar_from_dict(
-            {
-                "0000/analysis_result": BytesIO(series_csv),
-                "0000/images/plot.png": BytesIO(b"fake-image"),
-            }
+        return SimpleNamespace(
+            returncode=0,
+            stderr="",
+            analysis_results={"0000": BytesIO(series_csv)},
+            error=None,
+            tar_read_ok=True,
         )
-        return SimpleNamespace(returncode=0, stdout=tar_out.getvalue(), stderr=b"")
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     out_dir = tmp_path / "out"
     ctx = read_context(
@@ -493,11 +596,11 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
     expected_rows = len(pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV))
     calls: list[list[tuple[str, str]]] = []
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        assert cmd == [sys.executable, str(entrypoint)]
-        assert env.get("ANALYSISRUN_MODE") == "analyzeseq"
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
 
-        tar_in = read_tar_as_dict(BytesIO(input))
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
         target_pairs = list(targets.items())
         calls.append(target_pairs)
@@ -508,9 +611,10 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
         assert isinstance(restored_df, pd.DataFrame)
         assert len(restored_df) == expected_rows
 
-        out: dict[str, BytesIO] = {}
+        analysis_results: dict[str, BytesIO] = {}
         for data_name, sample_name in target_pairs:
-            out[f"{data_name}/analysis_result"] = _dump_csv(
+            on_image(data_name, "plot.png", b"fake-image", "png")
+            analysis_results[data_name] = _dump_csv(
                 pd.DataFrame(
                     [
                         {
@@ -523,11 +627,17 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
             )
         return SimpleNamespace(
             returncode=0,
-            stdout=create_tar_from_dict(out).getvalue(),
-            stderr=b"",
+            stderr="",
+            analysis_results=analysis_results,
+            error=None,
+            tar_read_ok=True,
         )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     ctx = read_context(
         Params,
@@ -593,12 +703,23 @@ def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
     )
 
     child_error = "error despite rc=0"
-    error_tar = create_tar_from_dict({"error": child_error})
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        return SimpleNamespace(returncode=0, stdout=error_tar.getvalue(), stderr=b"")
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        return SimpleNamespace(
+            returncode=0,
+            stderr="",
+            analysis_results={},
+            error=child_error,
+            tar_read_ok=True,
+        )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     ctx = read_context(
         Params,
@@ -653,24 +774,27 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
     )
 
     child_error = "child error with image"
-    error_tar = create_tar_from_dict(
-        {
-            "error": child_error,
-            "0000/images/error_plot.png": BytesIO(b"error-image"),
-        }
-    )
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
         if "0000" in targets:
+            on_image("0000", "error_plot.png", b"error-image", "png")
             return SimpleNamespace(
-                returncode=1, stdout=error_tar.getvalue(), stderr=b""
+                returncode=1,
+                stderr="",
+                analysis_results={},
+                error=child_error,
+                tar_read_ok=True,
             )
         data_name, sample_name = next(iter(targets.items()))
-        ok_tar = create_tar_from_dict(
-            {
-                f"{data_name}/analysis_result": _dump_csv(
+        return SimpleNamespace(
+            returncode=0,
+            stderr="",
+            analysis_results={
+                data_name: _dump_csv(
                     pd.DataFrame(
                         [
                             {
@@ -681,11 +805,16 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
                         ]
                     )
                 )
-            }
+            },
+            error=None,
+            tar_read_ok=True,
         )
-        return SimpleNamespace(returncode=0, stdout=ok_tar.getvalue(), stderr=b"")
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     out_dir = tmp_path / "out"
     ctx = read_context(
@@ -1002,15 +1131,18 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
     entrypoint.write_text("# dummy\n")
     monkeypatch.setattr(pipeable, "get_entrypoint", lambda: entrypoint)
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
         preprocessed = pickle.loads(tar_in["preprocessed_data"].getvalue())
         assert preprocessed["multiplier"] == 3
 
-        out: dict[str, BytesIO] = {}
+        analysis_results: dict[str, BytesIO] = {}
         for data_name, sample_name in targets.items():
-            out[f"{data_name}/analysis_result"] = _dump_csv(
+            on_image(data_name, "plot.png", b"preprocessed-image", "png")
+            analysis_results[data_name] = _dump_csv(
                 pd.DataFrame(
                     [
                         {
@@ -1023,11 +1155,17 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
             )
         return SimpleNamespace(
             returncode=0,
-            stdout=create_tar_from_dict(out).getvalue(),
-            stderr=b"",
+            stderr="",
+            analysis_results=analysis_results,
+            error=None,
+            tar_read_ok=True,
         )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     stdout_buf = BytesIO()
     input_tar = _build_streaming_input_tar(
@@ -1085,15 +1223,18 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
     )
     calls = {"count": 0}
 
-    def fake_run(cmd, *, input, stdout, stderr, env):
-        tar_in = read_tar_as_dict(BytesIO(input))
+    def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
+        assert entrypoint_path == entrypoint
+        assert mode == "analyzeseq"
+        tar_in = read_tar_as_dict(tar_buf)
         targets = json.loads(tar_in["targets"])
         preprocessed_data = pickle.loads(tar_in["preprocessed_data"].getvalue())
         assert isinstance(preprocessed_data, dict)
         assert "multipliers" in preprocessed_data
-        out: dict[str, BytesIO] = {}
+        analysis_results: dict[str, BytesIO] = {}
         for data_name, sample_name in targets.items():
-            out[f"{data_name}/analysis_result"] = _dump_csv(
+            on_image(data_name, "plot.png", b"preprocessed-image", "png")
+            analysis_results[data_name] = _dump_csv(
                 pd.DataFrame(
                     [
                         {
@@ -1106,11 +1247,17 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
             )
         return SimpleNamespace(
             returncode=0,
-            stdout=create_tar_from_dict(out).getvalue(),
-            stderr=b"",
+            stderr="",
+            analysis_results=analysis_results,
+            error=None,
+            tar_read_ok=True,
         )
 
-    monkeypatch.setattr(pipeable.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pipeable,
+        "_run_entrypoint_with_tar_streaming",
+        fake_run_stream,
+    )
 
     ctx = read_context(
         Params,
@@ -1122,8 +1269,10 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
     def postprocess(args):
         df = args.analysis_results.copy()
         df["scaled"] = df.apply(
-            lambda row: row["total_value"]
-            * args.preprocessed_data["multipliers"][row["data_name"]],
+            lambda row: (
+                row["total_value"]
+                * args.preprocessed_data["multipliers"][row["data_name"]]
+            ),
             axis=1,
         )
         return df
