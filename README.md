@@ -11,74 +11,76 @@ $ uv add git+https://github.com/cosomil/analysisrun --tag v0.0.6
 
 ### 使用方法
 ```python
+from pathlib import Path
+from typing import NamedTuple
+
+import matplotlib.pyplot as plt
 import pandas as pd
+from pydantic import BaseModel
 
-from analysisrun.runner import AnalyzeArgs, ParallelRunner, PostprocessArgs
-from analysisrun.cleansing import filter_by_entity
+import analysisrun as ar
 
-main_data = pd.read_csv("./path/to/the/file.csv")
-enhance_data = pd.read_csv("./path/to/the/file_enhancement.csv")
 
-class Context:
-    your_analysis_parameter: str
+class Params(BaseModel):
+    threshold: float = 0.8
 
-# 各レーンの解析を行う関数
-def analyze(args: AnalysisArgs[Context]):
-    ctx, output = args.ctx, ctx.output
-    fields, [additional_fields] = args.fields, args.fields_for_enhancement
 
-    for (field, additional_field) in zip(fields, additional_fields):
-        # ある視野の情報と追加データの同じ視野の情報を用いて解析処理を実行
-        # ...
+class ImageAnalysisResults(NamedTuple):
+    activity_spots: ar.Fields = ar.image_analysis_result_spec(
+        description="Activity spots",
+        cleansing=ar.entity_filter("Activity Spots"),
+    )
 
-    # ...
 
-    # 画像の出力
-    output(fig, "filename.png", "result_graph")
+def analyze(
+    args: ar.AnalyzeArgs[Params, ImageAnalysisResults],
+) -> pd.Series:
+    fields = args.image_analysis_results.activity_spots
+    lane_name = fields.data_name
 
-    # ...
+    # 各レーンの解析を実装する
+    area_mean = fields.area.mean()
+    ok = area_mean >= args.params.threshold
 
-    return pd.Series({ ... })
+    fig, ax = plt.subplots()
+    ax.hist(fields.area)
+    ax.set_title(f"Area Histogram: {lane_name}")
+    ax.set_xlabel("area")
+    ax.set_ylabel("count")
+    args.output(fig, f"{lane_name}_area_hist.png", "png")
 
-# 全ての解析結果をマージしたDataFrameに対し、さらに後処理を加えるための関数(optional)
-def postprocess(args: PostprocessArgs[Context]):
-    results = args.analysis_results
-    if False in results.ok:
-      results[ok] = False # 1件でも結果不良のデータがあれば全て不可と判定する
+    return pd.Series(
+        {
+            "ok": ok,
+            "area_mean": area_mean,
+        }
+    )
+
+
+def postprocess(args: ar.PostprocessArgs[Params]) -> pd.DataFrame:
+    results = args.analysis_results.copy()
+    if not results["ok"].all():
+        results["ok"] = False
     return results
 
-runner = ParallelRunner(analyze, postprocess)
-result = runner.run(
-  ctx=Context(your_analysis_parameter="aaaaaa"),
-  target_data=["A", "B", "C"],
-  whole_data=filter_by_entity(main_data, entity="Activity Spots"),
-  data_for_enhancement=[filter_by_entity(enhance_data, entity="Total Count")],
+
+project_root = Path(".")
+testdata_dir = project_root / "tests" / "testdata"
+
+ctx = ar.read_context(
+    Params,
+    ImageAnalysisResults,
+    manual_input=ar.ManualInput(
+        Params(threshold=0.8),
+        {
+            "activity_spots": testdata_dir / "image_analysis_result.csv",
+        },
+        sample_names=testdata_dir / "samples.csv",
+    ),
+    output_dir=project_root / "output",
 )
 
-result.to_csv("path/to/result/file.csv")
+result = ctx.run_analysis(analyze=analyze, postprocess=postprocess)
+result.to_csv(project_root / "output" / "result.csv", index=False)
 
 ```
-
-各モジュールの詳細は[ドキュメント](documents.md)を参照。
-
-## Pythonスクリプト実行ヘルパー
-### 必要条件
-- PowerShellがインストールされている
-- Gitがインストールされている
-  - 参考: https://qiita.com/takeru-hirai/items/4fbe6593d42f9a844b1c
-- uvがインストールされている
-  - `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
-  - [uv(Pythonのパッケージマネージャ)の使い方](https://www.notion.so/cosomil/uv-Python-200ac7552b3c80f19190e94a67daf175)
-
-### インストール方法
-PowerShellを開き、以下のコマンドを貼り付けて実行してください。
-```ps
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/cosomil/analysisrun/refs/heads/main/scripts/install.ps1 | iex"
-```
-成功すると、デスクトップに「Pythonスクリプトを実行する」というショートカットが作成されます。
-
-### 使用方法
-ショートカットに、実行したいPythonスクリプトが入ったフォルダをドラッグ＆ドロップしてください。
-
-- Pythonスクリプトは`uv`で作成されたプロジェクトである必要があり、依存関係を自動的にインストールします
-- デフォルトではフォルダーに含まれる`main.py`を実行します。存在しない場合は他のスクリプトを実行することができます
