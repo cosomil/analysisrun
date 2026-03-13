@@ -252,6 +252,21 @@ def test_lanes_with_empty_data():
     assert len(lane2.data) == 0
 
 
+def test_lanes_with_empty_dataframe_sets_columns():
+    """空のDataFrameの場合にImageAnalysisMethod/Data列が空文字列で用意される"""
+    test_data = pd.DataFrame(
+        {"Filename": pd.Series(dtype="object"), "MultiPointIndex": pd.Series(dtype="int")}
+    )
+    cleansed_data = CleansedData(_data=test_data)
+
+    lanes = Lanes(whole_data=cleansed_data, target_data=[], field_numbers=[])
+
+    assert "ImageAnalysisMethod" in lanes.whole_data.columns
+    assert "Data" in lanes.whole_data.columns
+    assert list(lanes.whole_data["ImageAnalysisMethod"]) == []
+    assert list(lanes.whole_data["Data"]) == []
+
+
 def test_complex_filename_formats():
     """複雑なファイル名形式のテスト"""
     # より複雑なファイル名のテストデータ

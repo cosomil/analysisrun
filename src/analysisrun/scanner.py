@@ -88,11 +88,15 @@ class Lanes:
         """
 
         data = whole_data._data
-        split_data = data["Filename"].str.split("_000_", expand=True)
-        data["ImageAnalysisMethod"] = split_data[0]
-        data["Data"] = split_data[1].str.split(".", expand=True)[0]
-
-        self.whole_data = data
+        # 入力データを直接変更せず、派生列を持つDataFrameを作る
+        if data.empty:
+            self.whole_data = data.assign(ImageAnalysisMethod="", Data="")
+        else:
+            split_data = data["Filename"].str.split("_000_", n=1, expand=True)
+            self.whole_data = data.assign(
+                ImageAnalysisMethod=split_data[0],
+                Data=split_data[1].str.split(".", n=1).str[0],
+            )
         self.target_data = target_data
         self.field_numbers = field_numbers
         return
