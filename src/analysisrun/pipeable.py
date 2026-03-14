@@ -153,6 +153,53 @@ def _get_image_analysis_specs[
     return specs
 
 
+def _build_streaming_input_schema[
+    Params: BaseModel,
+    ImageAnalysisResults: NamedTupleLike[Fields],
+](
+    params: Type[Params],
+    image_analysis_results: Type[ImageAnalysisResults],
+) -> dict[str, Any]:
+    specs = _get_image_analysis_specs(image_analysis_results)
+    tar_entries: list[dict[str, Any]] = [
+        {
+            "path": "params",
+            "required": True,
+            "content_type": "application/json",
+            "description": "解析全体に関わるパラメータ",
+            "pax_headers": {},
+            "json_schema": params.model_json_schema(),
+        },
+        {
+            "path": "sample_names",
+            "required": True,
+            "content_type": "text/csv",
+            "description": "サンプル名CSVファイル（サンプル名とレーン番号の対応表）",
+            "pax_headers": {"is_file": "true"},
+        },
+    ]
+    for name, spec in specs.items():
+        tar_entries.append(
+            {
+                "path": f"image_analysis_results/{name}",
+                "required": True,
+                "content_type": "text/csv",
+                "description": spec.description,
+                "pax_headers": {"is_file": "true"},
+            }
+        )
+
+    return {
+        "schema_version": "1",
+        "transport": {
+            "type": "tar",
+            "compression": ["tar", "tar.gz"],
+            "path_separator": "/",
+        },
+        "tar_entries": tar_entries,
+    }
+
+
 def create_image_analysis_results_input_model[
     ImageAnalysisResults: NamedTupleLike[Fields],
 ](image_analysis_results: Type[ImageAnalysisResults]) -> Type[BaseModel]:
@@ -1424,7 +1471,8 @@ def read_context[
         )
 
     elif env_mode == "showschema":
-        _stdout.write(b"{}")
+        schema = _build_streaming_input_schema(params, image_analysis_results)
+        _stdout.write(json.dumps(schema, ensure_ascii=False).encode("utf-8"))
         _stdout.flush()
         raise SystemExit(0)
 
