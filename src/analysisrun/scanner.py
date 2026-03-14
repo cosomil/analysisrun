@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -44,7 +44,10 @@ class Fields:
 
     def skip_empty_fields(self):
         """
-        データのない視野をスキップするスキャナーを作成する
+        データのない視野をスキップするスキャナーを作成する。
+
+        `field_numbers` は維持したまま、該当データがある視野だけを
+        走査したいときに使う。
         """
         return Fields(
             name=self.data_name,
@@ -65,7 +68,20 @@ class Fields:
 
 class Lanes:
     """
-    データ全体をレーンごとにスキャンする
+    データ全体をレーンごとにスキャンするヘルパー。
+
+    `Filename` 列から `ImageAnalysisMethod` と `Data` を導出する。
+    `ImageAnalysisMethod` 列と `Data` 列が既に存在する場合は、それらを再計算せず既存値をそのまま使う。
+
+    Examples
+    --------
+    >>> lanes = Lanes(
+    ...     whole_data=data,
+    ...     target_data=["data1", "data2"],
+    ...     field_numbers=[1, 2],
+    ... )
+    >>> [lane.data_name for lane in lanes]
+    ['data1', 'data2']
     """
 
     def __init__(
@@ -75,7 +91,7 @@ class Lanes:
         field_numbers: List[int],
     ) -> None:
         """
-        データ全体をレーンごとにスキャンする
+        データ全体をレーンごとにスキャンする。
 
         Parameters
         ----------
@@ -88,8 +104,11 @@ class Lanes:
         """
 
         data = whole_data._data
+        # 既に必要な派生列があれば再代入せずそのまま使う
+        if {"ImageAnalysisMethod", "Data"}.issubset(data.columns):
+            self.whole_data = data
         # 入力データを直接変更せず、派生列を持つDataFrameを作る
-        if data.empty:
+        elif data.empty:
             self.whole_data = data.assign(ImageAnalysisMethod="", Data="")
         else:
             split_data = data["Filename"].str.split("_000_", n=1, expand=True)
@@ -113,3 +132,54 @@ class Lanes:
             )
             for name in self.target_data
         )
+
+
+def scan(
+    whole_data: pd.DataFrame,
+    target_data: List[str],
+    field_numbers: Optional[List[int]] = None,
+) -> Lanes:
+    """
+    データ全体をレーンごとにスキャンする。
+
+    `Lanes` を直接組み立てなくても、手元の `DataFrame` を
+    レーン単位・視野単位で順に処理したいときに使える。
+
+    Examples
+    --------
+    >>> df = pd.DataFrame(
+    ...     {
+    ...         "Filename": [
+    ...             "method1_000_data1.csv",
+    ...             "method1_000_data1.csv",
+    ...             "method2_000_data2.csv",
+    ...         ],
+    ...         "MultiPointIndex": [1, 2, 1],
+    ...         "Value": [10, 20, 30],
+    ...     }
+    ... )
+    >>> for lane in scan(df, target_data=["data1", "data2"], field_numbers=[1, 2]):
+    ...     print(lane.data_name, lane.image_analysis_method)
+    ...     for field in lane.skip_empty_fields():
+    ...         print(field["Value"].sum())
+    data1 method1
+    10
+    20
+    data2 method2
+    30
+
+    Parameters
+    ----------
+    whole_data
+        解析対象データ
+    target_data
+        対象データ名のリスト
+    field_numbers
+        スキャン対象となる視野番号のリスト（指定しない場合は1から12までの視野が対象）
+    """
+
+    return Lanes(
+        whole_data=CleansedData(_data=whole_data),
+        target_data=target_data,
+        field_numbers=field_numbers or [i + 1 for i in range(12)],
+    )
