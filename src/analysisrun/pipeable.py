@@ -1749,8 +1749,8 @@ def _build_fields_namedtuple[
 
 
 def _ensure_result_annotations(series: pd.Series, data_name: str, sample_name: str):
-    if "data_name" not in series:
-        series["data_name"] = data_name
+    if "data" not in series:
+        series["data"] = data_name
     if "sample_name" not in series:
         series["sample_name"] = sample_name
 
@@ -1845,7 +1845,7 @@ def _deserialize_preprocessed_data(value: Any) -> Any:
 _CSV_DTYPE: dict[str, type] = {
     "Entity": str,
     "Filename": str,
-    "data_name": str,
+    "data": str,
     "sample_name": str,
 }
 
@@ -2101,7 +2101,7 @@ def _write_parallel_streaming_result_entries(
     _add_tar_binary_entry(tar, "result_csv", csv_buf.getvalue())
 
     for idx, row in result_df.iterrows():
-        data_name = row["data_name"] if "data_name" in row else idx
+        data_name = row["data"] if "data" in row else idx
         json_bytes = row.to_json().encode("utf-8")
         _add_tar_binary_entry(tar, f"{str(data_name)}/result_json", json_bytes)
 
