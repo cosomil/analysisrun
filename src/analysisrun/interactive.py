@@ -3,9 +3,20 @@ from dataclasses import is_dataclass
 from io import BytesIO
 from os import getcwd
 from pathlib import Path
-from typing import Annotated, Any, Optional, Type, TypeGuard, TypeVar, get_origin
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    Type,
+    TypeGuard,
+    TypeVar,
+    get_origin,
+)
 
-from pydantic import BaseModel, Field, ValidationError
+import questionary
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
 from typing_extensions import deprecated
 
@@ -21,8 +32,99 @@ def _get_field_descriptions(typ) -> str | None:
     return None
 
 
+def _get_default_value(field_info) -> Any:
+    if field_info is None or field_info.is_required():
+        return PydanticUndefined
+    if field_info.default is not PydanticUndefined:
+        return field_info.default
+    if field_info.default_factory is not None:
+        return field_info.default_factory()
+    return PydanticUndefined
+
+
+def _format_validation_error(e: ValidationError, field_name: str) -> str:
+    messages = []
+    for error in e.errors():
+        loc = list(error.get("loc", ()))
+        if loc and loc[0] == field_name:
+            loc = loc[1:]
+        suffix = "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}" for part in loc
+        )
+        messages.append(f"{field_name}{suffix}: {error['msg']}")
+    return "\n".join(messages) if messages else str(e)
+
+
+def _validate_and_store_field_value(
+    model_class: Type[BaseModel], draft_model: BaseModel, field_name: str, value: Any
+) -> Any:
+    try:
+        model_class.__pydantic_validator__.validate_assignment(
+            draft_model, field_name, value
+        )
+    except AttributeError:
+        # 相関チェックが未入力フィールドに依存する場合は、最終的なモデル検証に委ねる
+        field_info = model_class.model_fields[field_name]
+        annotation = field_info.annotation
+        if field_info.metadata:
+            annotation = Annotated[annotation, *field_info.metadata]
+        parsed_value = TypeAdapter(annotation).validate_python(value)
+        setattr(draft_model, field_name, parsed_value)
+    return getattr(draft_model, field_name)
+
+
+def _ask_text(
+    prompt: str,
+    model_class: Type[BaseModel],
+    draft_model: BaseModel,
+    field_name: str,
+    default_value: Any,
+    input_method: Literal["text", "path"] = "text",
+) -> Any:
+    has_default = default_value is not PydanticUndefined
+
+    def validate(text: str) -> bool | str:
+        candidate = default_value if text == "" and has_default else text
+        try:
+            _validate_and_store_field_value(
+                model_class, draft_model, field_name, candidate
+            )
+        except ValidationError as e:
+            return _format_validation_error(e, field_name)
+        return True
+
+    q: questionary.Question
+    match input_method:
+        case "text":
+            q = questionary.text(prompt, validate=validate)
+        case "path":
+            q = questionary.path(prompt, validate=validate)
+
+    answer = q.unsafe_ask()
+    candidate = default_value if answer == "" and has_default else answer
+    return _validate_and_store_field_value(
+        model_class, draft_model, field_name, candidate
+    )
+
+
+def _ask_questionary_text(
+    prompt: str, validate: Optional[Callable[[str], bool | str]] = None
+) -> str:
+    answer = questionary.text(
+        prompt, validate=validate if validate is not None else (lambda _: True)
+    ).ask()
+    if answer is None:
+        raise KeyboardInterrupt()
+    return answer
+
+
 def _prompt_for_value(
-    field_type: Type, field_name: str, description: Optional[str], field_info=None
+    model_class: Type[BaseModel],
+    draft_model: BaseModel,
+    field_type: Type,
+    field_name: str,
+    description: Optional[str],
+    field_info=None,
 ) -> Any:
     """
     フィールドの型に応じて適切な入力方法でユーザーから値を取得します。
@@ -41,19 +143,15 @@ def _prompt_for_value(
     origin = get_origin(field_type)
 
     # デフォルト値の取得と判定
-    default_value = (
-        getattr(field_info, "default", PydanticUndefined)
-        if field_info
-        else PydanticUndefined
-    )
+    default_value = _get_default_value(field_info)
     has_default = default_value is not PydanticUndefined
 
     # デフォルト値の表示用文字列
     default_str = f" [デフォルト: {default_value}]" if has_default else ""
     prompt = (
-        f"{description} ({field_name}){default_str}: "
+        f"{description} ({field_name}){default_str}:"
         if description
-        else f"{field_name}{default_str}: "
+        else f"{field_name}{default_str}:"
     )
 
     # NamedTuple型の場合
@@ -62,7 +160,7 @@ def _prompt_for_value(
         and issubclass(field_type, tuple)
         and hasattr(field_type, "_fields")
     ):
-        print(prompt)
+        questionary.print(prompt, style="bold")
         named_tuple_values = {}
         field_defaults = field_type._field_defaults or dict()  # type: ignore
         assert isinstance(field_defaults, dict)
@@ -72,13 +170,8 @@ def _prompt_for_value(
             description = (
                 _get_field_descriptions(default) if default is not None else None
             )
-            print("prompt")
-            prompt = (
-                f"  - {description} ({sub_field}): "
-                if description
-                else f"  - {sub_field}: "
-            )
-            sub_value = input(prompt)
+            prompt = f"{description} ({sub_field}):" if description else f"{sub_field}:"
+            sub_value = _ask_questionary_text(prompt)
             # 入力がない場合のフラグ
             if not sub_value and has_default:
                 return default_value
@@ -88,14 +181,14 @@ def _prompt_for_value(
 
     # 通常のタプル型の場合
     elif origin is tuple or field_type is tuple:
-        print(prompt)
+        questionary.print(prompt, style="bold")
         tuple_values = []
 
         # タプルの要素数がわかる場合
         args = getattr(field_type, "__args__", None)
         if args:
             for i, arg_type in enumerate(args):
-                sub_value = input(f"  - {i}: ")
+                sub_value = _ask_questionary_text(f"{i}:")
                 # 空入力があり、デフォルト値が存在する場合は即時適用
                 if not sub_value and has_default:
                     return default_value
@@ -104,7 +197,7 @@ def _prompt_for_value(
             # 要素数が不明の場合
             first_element = True
             while True:
-                sub_value = input(f"  - {len(tuple_values)} (空白で終了): ")
+                sub_value = _ask_questionary_text(f"{len(tuple_values)} (空白で終了):")
                 # 最初の入力が空で、デフォルト値がある場合はデフォルト値を適用
                 if not sub_value and first_element and has_default:
                     return default_value
@@ -128,13 +221,15 @@ def _prompt_for_value(
 
     # その他の型の場合（custom_inputを含む）
     else:
-        value = input(prompt)
-
-        # 入力がない場合にデフォルト値が設定されている場合
-        if not value and has_default:
-            return default_value
-
-        return value
+        input_method = _get_custom_input_method(field_type)
+        return _ask_text(
+            prompt=prompt,
+            model_class=model_class,
+            draft_model=draft_model,
+            field_name=field_name.split(".")[-1],
+            default_value=default_value,
+            input_method=input_method,
+        )
 
 
 def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
@@ -142,33 +237,27 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
         "model_class must be a Pydantic BaseModel"
     )
 
-    # 有効な入力値を保存する辞書
-    valid_inputs = {}
-    field_values = {}
-
-    # モデルのフィールドを取得する
-    # NoneTypeのフィールドについては、Noneで初期化しておく
     fields = model_class.model_fields
+    valid_inputs = {}
+
     for field_name, field_type in fields.items():
         if field_type.annotation is type(None):
             valid_inputs[field_name] = None
 
     while True:
+        field_values = {}
         try:
-            # 前回有効だった入力を引き継ぎ
-            field_values = {}
             field_values.update(valid_inputs)
 
-            # エラーフィールドのセット（初回は全フィールドを入力対象とする）
-            error_fields = set(fields.keys()) - set(valid_inputs.keys())
+            draft_model = model_class.model_construct()
+            for field_name, value in valid_inputs.items():
+                setattr(draft_model, field_name, value)
 
+            error_fields = set(fields.keys()) - set(valid_inputs.keys())
             if not error_fields:
-                # すべてのフィールドが有効な場合は全フィールドを入力対象にする
                 error_fields = set(fields.keys())
 
-            # 各フィールドについて入力を促す
             for field_name, field_type in fields.items():
-                # エラーのあったフィールドのみ再入力を要求
                 if field_name not in error_fields:
                     continue
 
@@ -179,61 +268,68 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
                     else None
                 )
 
-                # 値の入力
                 assert field_type.annotation is not None
                 display_field_name = f"{parent}.{field_name}" if parent else field_name
-                field_values[field_name] = _prompt_for_value(
-                    field_type.annotation, display_field_name, description, field_info
+                value = _prompt_for_value(
+                    model_class=model_class,
+                    draft_model=draft_model,
+                    field_type=field_type.annotation,
+                    field_name=display_field_name,
+                    description=description,
+                    field_info=field_info,
+                )
+                field_values[field_name] = _validate_and_store_field_value(
+                    model_class, draft_model, field_name, value
                 )
 
-            # モデルのインスタンスを作成してみる
             return model_class(**field_values)
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            print("\n⚠️ 入力値にエラーがあります:")
+            questionary.print("\n⚠️ 入力値にエラーがあります:", style="bold orange")
 
-            # Pydanticのバリデーションエラーの場合、エラーフィールドを特定
             error_fields = set()
 
             if isinstance(e, ValidationError):
-                # エラーメッセージをフィールドごとにグループ化
                 field_errors: dict[str, list[str]] = {}
+                has_model_level_error = False
                 for error in e.errors():
-                    if error["loc"]:
-                        field_name: str = error["loc"][0]  # type: ignore
+                    loc = error.get("loc", ())
+                    if loc and isinstance(loc[0], str) and loc[0] in fields:
+                        field_name = loc[0]
                         error_fields.add(field_name)
 
-                        index = error["loc"][1] if len(error["loc"]) > 1 else None
+                        index = loc[1] if len(loc) > 1 else None
                         display_field_name = (
                             f"{field_name}[{index}]"
                             if index is not None
                             else field_name
                         )
-                        if display_field_name not in field_errors:
-                            field_errors[display_field_name] = []
-                        field_errors[display_field_name].append(error["msg"])
+                    else:
+                        has_model_level_error = True
+                        display_field_name = parent or model_class.__name__
 
-                # エラー内容を表示
+                    if display_field_name not in field_errors:
+                        field_errors[display_field_name] = []
+                    field_errors[display_field_name].append(error["msg"])
+
                 for field_name, errors in field_errors.items():
-                    print(f"  {field_name}:")
+                    questionary.print(f"  {field_name}:", style="bold")
                     for error_msg in errors:
-                        print(f"    - {error_msg}")
+                        print(f"    * {error_msg}")
 
-                # エラーがないフィールドの値を保存
-                for (
-                    field_name,
-                    value,
-                ) in field_values.items():
+                if has_model_level_error:
+                    error_fields = set(fields.keys())
+
+                for field_name, value in field_values.items():
                     if field_name not in error_fields:
                         valid_inputs[field_name] = value
 
                 print("エラーとなった項目を再入力してください")
             else:
-                # その他の例外の場合は全フィールドを再入力
                 print(f"エラーが発生しました: {str(e)}")
                 print("すべての項目を再入力してください")
-                valid_inputs = {}  # 有効な入力をリセット
+                valid_inputs = {}
 
             print()
 
@@ -262,9 +358,10 @@ def scan_model_input(model_class: Type[T]) -> T:
         raise InputAborted() from None
 
 
-def custom_input():
+def custom_input(input_method: Literal["text", "path"] = "text"):
     def wrapper(source_type):
         setattr(source_type, "__analysisrun_custom_input__", True)
+        setattr(source_type, "__analysisrun_input_method__", input_method)
         return source_type
 
     return wrapper
@@ -272,6 +369,10 @@ def custom_input():
 
 def _is_custom_input(v) -> bool:
     return hasattr(v, "__analysisrun_custom_input__")
+
+
+def _get_custom_input_method(v) -> Literal["text", "path"]:
+    return getattr(v, "__analysisrun_input_method__", "text")
 
 
 def _is_pydantic_model(v) -> TypeGuard[Type[BaseModel]]:
@@ -308,7 +409,6 @@ class FilePath(str):
 
 
 @custom_input()
-@deprecated("削除予定")
 class DirectoryPath(str):
     """
     ディレクトリパスを表す文字列型。バリデーションの際にディレクトリの存在を確認します。
@@ -336,7 +436,7 @@ class DirectoryPath(str):
         return core_schema.no_info_plain_validator_function(validate)
 
 
-@custom_input()
+@custom_input(input_method="path")
 class VirtualFile(Path):
     """
     仮想ファイルを扱う型。Pathオブジェクトまたはio.BytesIOオブジェクトを受け入れます。
@@ -386,10 +486,15 @@ class VirtualFile(Path):
                     ):
                         v = v[1:-1]
                     v = Path(v)
-                if not v.exists():
-                    raise ValueError(f"ファイルが存在しません: '{v}'")
-                if not v.is_file():
-                    raise ValueError(f"ファイルのパスを指定してください: '{v}'")
+                try:
+                    if not v.exists():
+                        raise ValueError(f"ファイルが存在しません: '{v}'")
+                    if not v.is_file():
+                        raise ValueError(f"ファイルのパスを指定してください: '{v}'")
+                except Exception:
+                    raise ValueError(
+                        f"ファイルパスにアクセスすることができません: '{v}'"
+                    )
                 return cls(v)
             elif isinstance(v, BytesIO):
                 return cls(v)  # type: ignore
