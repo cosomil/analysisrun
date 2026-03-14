@@ -109,6 +109,49 @@ def test_create_image_analysis_results_input_model_requires_spec():
         create_image_analysis_results_input_model(InvalidImageResults)
 
 
+def test_read_context_showschema_outputs_streaming_input_schema(monkeypatch):
+    monkeypatch.setenv("ANALYSISRUN_MODE", "showschema")
+
+    stdout_buf = BytesIO()
+
+    with pytest.raises(SystemExit) as excinfo:
+        read_context(Params, ImageResults, stdout=stdout_buf)
+
+    assert excinfo.value.code == 0
+
+    schema = json.loads(stdout_buf.getvalue().decode("utf-8"))
+    assert schema["schema_version"] == "1"
+    assert schema["transport"] == {
+        "type": "tar",
+        "compression": ["tar", "tar.gz"],
+        "path_separator": "/",
+    }
+
+    tar_entries = {entry["path"]: entry for entry in schema["tar_entries"]}
+    assert tar_entries["params"]["required"] is True
+    assert tar_entries["params"]["content_type"] == "application/json"
+    assert tar_entries["params"]["pax_headers"] == {}
+    assert tar_entries["params"]["json_schema"]["type"] == "object"
+    assert tar_entries["params"]["json_schema"]["properties"]["threshold"]["type"] == (
+        "integer"
+    )
+
+    assert tar_entries["sample_names"] == {
+        "path": "sample_names",
+        "required": True,
+        "content_type": "text/csv",
+        "description": "サンプル名CSVファイル（サンプル名とレーン番号の対応表）",
+        "pax_headers": {"is_file": "true"},
+    }
+    assert tar_entries["image_analysis_results/activity_spots"] == {
+        "path": "image_analysis_results/activity_spots",
+        "required": True,
+        "content_type": "text/csv",
+        "description": "Activity spots",
+        "pax_headers": {"is_file": "true"},
+    }
+
+
 def test_run_analysis_sequential_with_manual_input(monkeypatch):
     monkeypatch.setenv("PSEUDO_NBENV", "1")
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
