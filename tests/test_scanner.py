@@ -267,6 +267,33 @@ def test_lanes_with_empty_dataframe_sets_columns():
     assert list(lanes.whole_data["Data"]) == []
 
 
+def test_lanes_uses_existing_columns_without_reassign():
+    """必要な列が既に存在する場合は既存の値をそのまま使う"""
+    test_data = pd.DataFrame(
+        {
+            "Filename": ["method1_000_data1.csv", "method2_000_data2.txt"],
+            "ImageAnalysisMethod": ["existing_method1", "existing_method2"],
+            "Data": ["existing_data1", "existing_data2"],
+            "MultiPointIndex": [1, 2],
+            "Value": [10, 20],
+        }
+    )
+    cleansed_data = CleansedData(_data=test_data)
+
+    lanes = Lanes(
+        whole_data=cleansed_data,
+        target_data=["existing_data1", "existing_data2"],
+        field_numbers=[1, 2],
+    )
+
+    assert lanes.whole_data is test_data
+    assert list(lanes.whole_data["ImageAnalysisMethod"]) == [
+        "existing_method1",
+        "existing_method2",
+    ]
+    assert list(lanes.whole_data["Data"]) == ["existing_data1", "existing_data2"]
+
+
 def test_complex_filename_formats():
     """複雑なファイル名形式のテスト"""
     # より複雑なファイル名のテストデータ
