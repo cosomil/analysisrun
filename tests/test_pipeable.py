@@ -190,7 +190,7 @@ def test_run_analysis_sequential_with_manual_input(monkeypatch):
     )
 
     assert list(result_df["sample_name"]) == ["SampleA", "SampleB"]
-    totals = result_df.sort_values("data_name").set_index("data_name")["total_value"]
+    totals = result_df.sort_values("data").set_index("data")["total_value"]
     assert totals.to_dict() == expected.to_dict()
     assert "norm" in result_df
     assert result_df["norm"].max() == pytest.approx(1.0)
@@ -220,7 +220,7 @@ def test_parallel_entrypoint_streaming_outputs_tar(monkeypatch, tmp_path: Path):
                 pd.DataFrame(
                     [
                         {
-                            "data_name": data_name,
+                            "data": data_name,
                             "sample_name": sample_name,
                             "total_value": 2,
                         }
@@ -266,7 +266,7 @@ def test_parallel_entrypoint_streaming_outputs_tar(monkeypatch, tmp_path: Path):
     assert "result_json" in tar_result["0000"]
 
     csv_df = pd.read_csv(tar_result["result_csv"], dtype=str)
-    assert list(csv_df.sort_values("data_name")["data_name"]) == ["0000", "0001"]
+    assert list(csv_df.sort_values("data")["data"]) == ["0000", "0001"]
 
 
 def test_parallel_entrypoint_streaming_postprocess_print_goes_to_stderr(
@@ -297,7 +297,7 @@ def test_parallel_entrypoint_streaming_postprocess_print_goes_to_stderr(
                     pd.DataFrame(
                         [
                             {
-                                "data_name": data_name,
+                                "data": data_name,
                                 "sample_name": sample_name,
                                 "total_value": 4,
                             }
@@ -372,7 +372,7 @@ def test_parallel_entrypoint_streaming_writes_images_before_result_entries(
                     pd.DataFrame(
                         [
                             {
-                                "data_name": data_name,
+                                "data": data_name,
                                 "sample_name": sample_name,
                                 "total_value": 5,
                             }
@@ -439,7 +439,7 @@ def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
                 pd.DataFrame(
                     [
                         {
-                            "data_name": data_name,
+                            "data": data_name,
                             "sample_name": sample_name,
                             "barcode": "0012" if data_name == "0000" else "0100",
                         }
@@ -478,7 +478,7 @@ def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
     assert excinfo.value.code == 0
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
     csv_df = pd.read_csv(tar_result["result_csv"], dtype=str)
-    assert list(csv_df.sort_values("data_name")["barcode"]) == ["0012", "0100"]
+    assert list(csv_df.sort_values("data")["barcode"]) == ["0012", "0100"]
 
     first = json.loads(tar_result["0000"]["result_json"].getvalue())
     second = json.loads(tar_result["0001"]["result_json"].getvalue())
@@ -601,7 +601,7 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
 
     df = ctx.run_analysis(analyze=lambda _: pd.Series({"unused": 0}))
     assert called["count"] == 1
-    assert list(df["data_name"]) == ["0000"]
+    assert list(df["data"]) == ["0000"]
     assert list(df["sample_name"]) == ["SampleA"]
     assert (out_dir / "plot.png").exists()
 
@@ -661,7 +661,7 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
                 pd.DataFrame(
                     [
                         {
-                            "data_name": data_name,
+                            "data": data_name,
                             "sample_name": sample_name,
                             "total_value": 1,
                         }
@@ -698,8 +698,8 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
         [("0003", "SampleD"), ("0004", "SampleE")],
     ]
 
-    got = result_df.sort_values("data_name").reset_index(drop=True)
-    assert list(got["data_name"]) == ["0000", "0001", "0002", "0003", "0004"]
+    got = result_df.sort_values("data").reset_index(drop=True)
+    assert list(got["data"]) == ["0000", "0001", "0002", "0003", "0004"]
     assert list(got["sample_name"]) == [
         "SampleA",
         "SampleB",
@@ -841,7 +841,7 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
                     pd.DataFrame(
                         [
                             {
-                                "data_name": data_name,
+                                "data": data_name,
                                 "sample_name": sample_name,
                                 "total_value": 2,
                             }
@@ -920,7 +920,7 @@ def test_run_analyze_seq_outputs_tar_with_multiple_targets_sequential(
         total = int(df["Value"].sum())
         return pd.Series(
             {
-                "data_name": args.data_name,
+                "data": args.data_name,
                 "sample_name": args.sample_name,
                 "total_value": total,
             }
@@ -945,17 +945,17 @@ def test_run_analyze_seq_outputs_tar_with_multiple_targets_sequential(
     # Verify analysis results
     result_0000 = pd.read_csv(
         tar_result["0000"]["analysis_result"],
-        dtype={"data_name": str, "sample_name": str},
+        dtype={"data": str, "sample_name": str},
     )
-    assert result_0000.iloc[0]["data_name"] == "0000"
+    assert result_0000.iloc[0]["data"] == "0000"
     assert result_0000.iloc[0]["sample_name"] == "SampleA"
     assert result_0000.iloc[0]["total_value"] > 0
 
     result_0001 = pd.read_csv(
         tar_result["0001"]["analysis_result"],
-        dtype={"data_name": str, "sample_name": str},
+        dtype={"data": str, "sample_name": str},
     )
-    assert result_0001.iloc[0]["data_name"] == "0001"
+    assert result_0001.iloc[0]["data"] == "0001"
     assert result_0001.iloc[0]["sample_name"] == "SampleB"
     assert result_0001.iloc[0]["total_value"] > 0
 
@@ -1020,7 +1020,7 @@ def test_run_analyze_seq_handles_target_failures_immediate(monkeypatch, capsys):
 
         return pd.Series(
             {
-                "data_name": args.data_name,
+                "data": args.data_name,
                 "sample_name": args.sample_name,
                 "total_value": int(df["Value"].sum()),
             }
@@ -1155,7 +1155,7 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
         postprocess=postprocess,
     )
 
-    assert set(result_df["data_name"]) == {"0000", "0001"}
+    assert set(result_df["data"]) == {"0000", "0001"}
     assert all(result_df["pre_threshold"] == 2)
     assert all(result_df["row_count"] > 0)
     assert calls["count"] == 1
@@ -1189,7 +1189,7 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
                 pd.DataFrame(
                     [
                         {
-                            "data_name": data_name,
+                            "data": data_name,
                             "sample_name": sample_name,
                             "total_value": 2,
                         }
@@ -1240,7 +1240,7 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
     assert excinfo.value.code == 0
     tar_result = read_tar_as_dict(BytesIO(stdout_buf.getvalue()))
     csv_df = pd.read_csv(tar_result["result_csv"])
-    assert list(csv_df.sort_values("data_name")["scaled"]) == [6, 6]
+    assert list(csv_df.sort_values("data")["scaled"]) == [6, 6]
 
 
 def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_data(
@@ -1281,7 +1281,7 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
                 pd.DataFrame(
                     [
                         {
-                            "data_name": data_name,
+                            "data": data_name,
                             "sample_name": sample_name,
                             "total_value": 2,
                         }
@@ -1314,7 +1314,7 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
         df["scaled"] = df.apply(
             lambda row: (
                 row["total_value"]
-                * args.preprocessed_data["multipliers"][row["data_name"]]
+                * args.preprocessed_data["multipliers"][row["data"]]
             ),
             axis=1,
         )
@@ -1332,8 +1332,8 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
         preprocess=preprocess,
         analyze=lambda _: pd.Series({"unused": 0}),
         postprocess=postprocess,
-    ).sort_values("data_name")
+    ).sort_values("data")
 
-    assert list(result_df["data_name"]) == ["0000", "0001"]
+    assert list(result_df["data"]) == ["0000", "0001"]
     assert list(result_df["scaled"]) == [10, 14]
     assert calls["count"] == 1
