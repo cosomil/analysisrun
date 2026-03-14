@@ -441,8 +441,8 @@ class AnalysisContext[
 
         - mode="analyze-seq": 複数レーンの解析をシーケンシャルに行い、各レーンの解析結果をまとめたtarデータを標準出力に書き出す。その後exitする。
         - mode="sequential": multiprocessingを活用できないJupyter notebook環境において、全レーンをシーケンシャルに処理し、DataFrameを返す。
-        - mode="parallel-entrypoint": entrypointを並列起動し、各プロセスで複数レーンをanalyzeseq実行した結果を集約、後処理を加えてDataFrameを返す。
-        - mode="parallel-entrypoint-streaming": entrypointを並列起動し、結果を集約してtarデータを標準出力に書き出す。その後exitする。
+        - mode="parallel-entrypoint": entrypointを並列起動し、各プロセスで複数レーンのanalyzeseqを実行して結果を集約する。集約後は必要に応じて後処理を加え、DataFrameを返す。
+        - mode="parallel-entrypoint-streaming": entrypointを並列起動し、各プロセスで複数レーンのanalyzeseqを実行して結果を集約する。集約後はtarデータを標準出力に書き出し、その後exitする。
 
         :param analyze: レーンごとに実行される解析処理の実装。
         :param postprocess: 後処理の実装（任意）。全レーンの解析結果をもとにさらに判定を加えたい場合に使用する。
@@ -499,7 +499,12 @@ class AnalysisContext[
         ] = None,
     ) -> pd.DataFrame:
         """
-        preprocess -> analyze -> postprocess の順で数値解析を実行する。
+        read_contextで読み込んだコンテキストに基づいて、preprocess -> analyze -> postprocess の順で数値解析を実行する。
+
+        - mode="analyze-seq": 複数レーンの前処理と解析をシーケンシャルに行い、各レーンの解析結果をまとめたtarデータを標準出力に書き出す。その後exitする。
+        - mode="sequential": multiprocessingを活用できないJupyter notebook環境において、全レーンをシーケンシャルに処理し、DataFrameを返す。
+        - mode="parallel-entrypoint": entrypointを並列起動し、各プロセスで複数レーンの前処理と解析を実行して結果を集約する。集約後は必要に応じて後処理を加え、DataFrameを返す。
+        - mode="parallel-entrypoint-streaming": entrypointを並列起動し、各プロセスで複数レーンの前処理と解析を実行して結果を集約する。集約後はtarデータを標準出力に書き出し、その後exitする。
 
         :param preprocess: レーンごとに実行される前処理の実装。
         :param analyze: 前処理済みデータを受け取って実行される解析処理の実装。
@@ -544,10 +549,11 @@ class AnalysisContext[
         stderr: IO[bytes],
     ) -> pd.DataFrame:
         """
-        複数ターゲットの解析をプロセス内でシーケンシャルに実行し、結果をtar形式で標準出力に出力する。
+        analyzeseqモードで、複数ターゲットの解析を単一プロセス内で順次実行し、結果をtar形式で標準出力に出力する。
 
+        parallel-entrypoint 系モードで起動された子プロセスから利用される想定であり、
         各ターゲットは同一プロセス内で順次処理される。
-        いずれかのターゲットでエラーが発生した場合、即座に全体を失敗として扱う。
+        いずれかのターゲットでエラーが発生した場合は、即座に全体を失敗として扱う。
 
         出力フォーマット:
             {
@@ -1405,7 +1411,11 @@ def read_context[
     output_dir: Optional[str | Path] = None,
 ) -> AnalysisContext[Params, ImageAnalysisResults]:
     """
-    引数、環境変数、標準入力を読み取り、
+    引数、環境変数、標準入力を読み取り、実行モードに応じたAnalysisContextを構築する。
+
+    `ANALYSISRUN_MODE` と対話環境の有無に応じて、
+    analyze-seq / sequential / parallel-entrypoint / parallel-entrypoint-streaming
+    のいずれかのstateを持つコンテキストを返す。
 
     :param params: 解析全体に関わるパラメータを定義するクラス
     :param image_analysis_results: 解析対象となる画像解析結果を定義するクラス
@@ -1509,7 +1519,7 @@ def read_context[
                 _stderr,
             )
 
-        # 分散実行でないあ場合Pythonオブジェクトとして入力を渡すことができるので、まずそれを優先して検証する。
+        # 分散実行でない場合はPythonオブジェクトとして入力を渡せるため、まずそれを優先して検証する。
         if manual_input is not None:
             try:
                 iar_input = image_analysis_results_input_model(
