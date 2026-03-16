@@ -44,6 +44,18 @@ class ImageResults(NamedTuple):
     )
 
 
+class RawImageResultsDf(NamedTuple):
+    activity_spots: pd.DataFrame
+
+
+class PreprocessedImageResultsDf(NamedTuple):
+    activity_spots: pd.DataFrame
+
+
+class PreprocessedImageResultsFields(NamedTuple):
+    activity_spots: Fields
+
+
 def _load_pickle_df(path: Path) -> BytesIO:
     df = pd.read_csv(path)
     return _dump_pickle(df)
@@ -1133,12 +1145,10 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
 
     def preprocess(args):
         calls["count"] += 1
-        df = args.image_analysis_results["activity_spots"]
-        with pytest.raises(TypeError):
-            args.image_analysis_results["other"] = df
+        df = args.image_analysis_results.activity_spots
         df["DoubleValue"] = df["Value"] * 2
         return ProcessedInputs(
-            image_analysis_results={"activity_spots": df},
+            image_analysis_results=PreprocessedImageResultsDf(activity_spots=df),
             extra={"row_count": int(len(df)), "threshold": int(args.params.threshold)},
         )
 
@@ -1157,6 +1167,9 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
         return df
 
     result_df = ctx.run_analysis_with_preprocess(
+        raw_image_analysis_results=RawImageResultsDf,
+        preprocessed_image_analysis_results_df=PreprocessedImageResultsDf,
+        preprocessed_image_analysis_results_fields=PreprocessedImageResultsFields,
         preprocess=preprocess,
         analyze=analyze,
         postprocess=postprocess,
@@ -1231,9 +1244,9 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
 
     def preprocess(args):
         return ProcessedInputs(
-            image_analysis_results={
-                name: df for name, df in args.image_analysis_results.items()
-            },
+            image_analysis_results=PreprocessedImageResultsDf(
+                activity_spots=args.image_analysis_results.activity_spots
+            ),
             extra={"multiplier": 3},
         )
 
@@ -1244,6 +1257,9 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
 
     with pytest.raises(SystemExit) as excinfo:
         ctx.run_analysis_with_preprocess(
+            raw_image_analysis_results=RawImageResultsDf,
+            preprocessed_image_analysis_results_df=PreprocessedImageResultsDf,
+            preprocessed_image_analysis_results_fields=PreprocessedImageResultsFields,
             preprocess=preprocess,
             analyze=lambda _: pd.Series({"unused": 0}),
             postprocess=postprocess,
@@ -1332,9 +1348,9 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
     def preprocess(args):
         calls["count"] += 1
         return ProcessedInputs(
-            image_analysis_results={
-                name: df for name, df in args.image_analysis_results.items()
-            },
+            image_analysis_results=PreprocessedImageResultsDf(
+                activity_spots=args.image_analysis_results.activity_spots
+            ),
             extra={
                 "multipliers": {
                     data_name: 5 + i * 2 for i, data_name in enumerate(args.targets)
@@ -1343,6 +1359,9 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
         )
 
     result_df = ctx.run_analysis_with_preprocess(
+        raw_image_analysis_results=RawImageResultsDf,
+        preprocessed_image_analysis_results_df=PreprocessedImageResultsDf,
+        preprocessed_image_analysis_results_fields=PreprocessedImageResultsFields,
         preprocess=preprocess,
         analyze=lambda _: pd.Series({"unused": 0}),
         postprocess=postprocess,
