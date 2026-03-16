@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from analysisrun.pipeable import (
     ManualInput,
+    ProcessedInputs,
     create_image_analysis_results_input_model,
     entity_filter,
     image_analysis_result_spec,
@@ -1133,20 +1134,26 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
     def preprocess(args):
         calls["count"] += 1
         df = args.image_analysis_results["activity_spots"]
-        return {"row_count": int(len(df)), "threshold": int(args.params.threshold)}
+        with pytest.raises(TypeError):
+            args.image_analysis_results["other"] = df
+        df["DoubleValue"] = df["Value"] * 2
+        return ProcessedInputs(
+            image_analysis_results={"activity_spots": df},
+            extra={"row_count": int(len(df)), "threshold": int(args.params.threshold)},
+        )
 
     def analyze(args):
         df = args.image_analysis_results.activity_spots.data
         return pd.Series(
             {
-                "total_value": int(df["Value"].sum()),
-                "row_count": args.preprocessed_data["row_count"],
+                "total_value": int(df["DoubleValue"].sum()),
+                "row_count": args.extra["row_count"],
             }
         )
 
     def postprocess(args):
         df = args.analysis_results.copy()
-        df["pre_threshold"] = args.preprocessed_data["threshold"]
+        df["pre_threshold"] = args.extra["threshold"]
         return df
 
     result_df = ctx.run_analysis_with_preprocess(
@@ -1222,12 +1229,17 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
         stdout=stdout_buf,
     )
 
-    def preprocess(_):
-        return {"multiplier": 3}
+    def preprocess(args):
+        return ProcessedInputs(
+            image_analysis_results={
+                name: df for name, df in args.image_analysis_results.items()
+            },
+            extra={"multiplier": 3},
+        )
 
     def postprocess(args):
         df = args.analysis_results.copy()
-        df["scaled"] = df["total_value"] * args.preprocessed_data["multiplier"]
+        df["scaled"] = df["total_value"] * args.extra["multiplier"]
         return df
 
     with pytest.raises(SystemExit) as excinfo:
@@ -1312,21 +1324,23 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
     def postprocess(args):
         df = args.analysis_results.copy()
         df["scaled"] = df.apply(
-            lambda row: (
-                row["total_value"]
-                * args.preprocessed_data["multipliers"][row["data"]]
-            ),
+            lambda row: row["total_value"] * args.extra["multipliers"][row["data"]],
             axis=1,
         )
         return df
 
     def preprocess(args):
         calls["count"] += 1
-        return {
-            "multipliers": {
-                data_name: 5 + i * 2 for i, data_name in enumerate(args.targets)
-            }
-        }
+        return ProcessedInputs(
+            image_analysis_results={
+                name: df for name, df in args.image_analysis_results.items()
+            },
+            extra={
+                "multipliers": {
+                    data_name: 5 + i * 2 for i, data_name in enumerate(args.targets)
+                }
+            },
+        )
 
     result_df = ctx.run_analysis_with_preprocess(
         preprocess=preprocess,
