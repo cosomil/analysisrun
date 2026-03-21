@@ -1822,6 +1822,11 @@ def _apply_cleansing_pipeline(
     if isinstance(cleansed, pd.DataFrame):
         return cleansed
 
+    raise TypeError(  # type: ignore
+        "cleansing function must return a pandas.DataFrame or CleansedData, "
+        f"got {type(cleansed)!r}"
+    )
+
 
 def _load_and_cleanse_image_results(
     image_analysis_results_model: BaseModel,
