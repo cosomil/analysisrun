@@ -1781,20 +1781,6 @@ def _copy_params[Params: BaseModel](params: Params) -> Params:
     return params.model_copy(deep=True)
 
 
-def _validate_namedtuple_fields(
-    expected_fields: tuple[str, ...],
-    actual_fields: tuple[str, ...],
-    *,
-    expected_name: str,
-    actual_name: str,
-) -> None:
-    if expected_fields != actual_fields:
-        raise ValueError(
-            f"{actual_name} must have the same fields as {expected_name}: "
-            f"expected {expected_fields}, got {actual_fields}"
-        )
-
-
 def _build_dataframe_namedtuple[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
