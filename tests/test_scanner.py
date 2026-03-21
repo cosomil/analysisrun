@@ -5,7 +5,7 @@ scanner.pyのテストコード
 import pandas as pd
 
 from analysisrun.cleansing import CleansedData
-from analysisrun.scanner import Fields, Lanes
+from analysisrun.scanner import Fields, Lanes, scan_fields
 
 
 def test_fields_initialization():
@@ -211,6 +211,58 @@ def test_lanes_iteration():
     assert lane2.image_analysis_method == "method2"
     assert len(lane2.data) == 2  # data2に対応する2行
     assert all(lane2.data["Data"] == "data2")
+
+
+def test_scan_fields_restores_fields_from_normalized_dataframe():
+    data = pd.DataFrame(
+        {
+            "Data": ["data1", "data1", "data2"],
+            "ImageAnalysisMethod": ["method1", "method1", "method2"],
+            "MultiPointIndex": [1, 2, 1],
+            "Value": [10, 20, 30],
+        }
+    )
+
+    fields = scan_fields(data, "data1", field_numbers=[1, 2])
+
+    assert fields.data_name == "data1"
+    assert fields.image_analysis_method == "method1"
+    assert len(fields.data) == 2
+
+
+def test_scan_fields_requires_normalized_dataframe():
+    data = pd.DataFrame(
+        {
+            "Filename": ["method1_000_data1.csv"],
+            "MultiPointIndex": [1],
+            "Value": [10],
+        }
+    )
+
+    try:
+        scan_fields(data, "data1")
+    except ValueError as exc:
+        assert "normalized DataFrame" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
+def test_scan_fields_requires_unique_image_analysis_method():
+    data = pd.DataFrame(
+        {
+            "Data": ["data1", "data1"],
+            "ImageAnalysisMethod": ["method1", "method2"],
+            "MultiPointIndex": [1, 2],
+            "Value": [10, 20],
+        }
+    )
+
+    try:
+        scan_fields(data, "data1")
+    except ValueError as exc:
+        assert "unique image_analysis_method" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
 
 
 def test_lanes_with_empty_data():

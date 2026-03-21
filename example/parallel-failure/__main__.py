@@ -5,7 +5,6 @@ import pandas as pd
 from pydantic import BaseModel
 
 import analysisrun as ar
-from analysisrun.scanner import Fields
 
 
 class FailureParams(BaseModel):
@@ -13,7 +12,7 @@ class FailureParams(BaseModel):
 
 
 class FailureImageAnalysisResults(NamedTuple):
-    activity_spots: Fields = ar.image_analysis_result_spec(
+    activity_spots: pd.DataFrame = ar.image_analysis_result_spec(
         description="Activity spots",
         cleansing=ar.entity_filter("Activity Spots"),
     )
@@ -22,7 +21,7 @@ class FailureImageAnalysisResults(NamedTuple):
 def analyze(
     args: ar.AnalyzeArgs[FailureParams, FailureImageAnalysisResults],
 ) -> pd.Series:
-    lane_name = args.image_analysis_results.activity_spots.data_name
+    lane_name = args.data_name
     raise RuntimeError(f"intentional failure during lane analysis: {lane_name}")
 
 

@@ -22,7 +22,6 @@ from analysisrun.pipeable import (
     entity_filter,
 )
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
-from analysisrun.scanner import Fields
 
 DATA_DIR = Path(__file__).parent / "testdata"
 IMAGE_ANALYSIS_RESULT_CSV = DATA_DIR / "image_analysis_result.csv"
@@ -33,7 +32,7 @@ class Params(BaseModel):
 
 
 class ImageResults(NamedTuple):
-    activity_spots: Fields = image_analysis_result_spec(
+    activity_spots: pd.DataFrame = image_analysis_result_spec(
         description="Activity spots",
         cleansing=entity_filter("Activity Spots"),
     )
@@ -140,7 +139,7 @@ def test_streaming_tar_structure_order(monkeypatch):
     )
     
     def analyze(args):
-        df = args.image_analysis_results.activity_spots.data
+        df = args.image_analysis_results.activity_spots
         fig = plt.figure()
         plt.plot([0, 1], [0, 1])
         args.output(fig, "plot1.png", "png")

@@ -41,7 +41,7 @@ from analysisrun.pipeable_io import (
     exit_with_error_streaming,
     redirect_stdout_to_stderr,
 )
-from analysisrun.scanner import Fields, scan
+from analysisrun.scanner import Fields, Lanes, scan
 from analysisrun.tar import FileIO, create_tar_from_dict, read_tar_as_dict
 
 
@@ -133,7 +133,7 @@ def entity_filter(
 
 
 def _get_image_analysis_specs[
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
     image_analysis_results: Type[ImageAnalysisResults],
 ) -> dict[str, _ImageAnalysisResultSpec]:
@@ -157,7 +157,7 @@ def _get_image_analysis_specs[
 
 def _build_streaming_input_schema[
     Params: BaseModel,
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
     params: Type[Params],
     image_analysis_results: Type[ImageAnalysisResults],
@@ -203,7 +203,7 @@ def _build_streaming_input_schema[
 
 
 def create_image_analysis_results_input_model[
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](image_analysis_results: Type[ImageAnalysisResults]) -> Type[BaseModel]:
     """
     ImageAnalysisResults定義から動的にVirtualFile入力モデルを生成する。
@@ -251,7 +251,7 @@ class InputModel[
 @dataclass
 class AnalyzeArgs[
     Params: BaseModel,
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ]:
     params: Params
     """
@@ -312,7 +312,7 @@ class ProcessedInputs[
 @dataclass
 class AnalyzeArgsWithPreprocess[
     Params: BaseModel,
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
     Extra,
 ]:
     params: Params
@@ -389,8 +389,7 @@ class _AnalyzeSeqState[ParamsT: BaseModel, ImageInputModelT: BaseModel](_BaseSta
 
 @dataclass
 class _SequentialState(_BaseState):
-    raw_data: dict[str, pd.DataFrame]
-    cleansed_data: dict[str, pd.DataFrame]
+    cleansed_lanes: dict[str, Lanes]
     sample_pairs: list[tuple[str, str]]
     field_numbers: list[int]
 
@@ -398,7 +397,7 @@ class _SequentialState(_BaseState):
 @dataclass
 class _ParallelState(_BaseState):
     raw_data: dict[str, pd.DataFrame]
-    cleansed_data: dict[str, pd.DataFrame]
+    cleansed_lanes: dict[str, Lanes]
     sample_pairs: list[tuple[str, str]]
     output_dir: Path
     entrypoint: Path
@@ -408,7 +407,7 @@ class _ParallelState(_BaseState):
 @dataclass
 class _ParallelStreamingState(_BaseState):
     raw_data: dict[str, pd.DataFrame]
-    cleansed_data: dict[str, pd.DataFrame]
+    cleansed_lanes: dict[str, Lanes]
     sample_pairs: list[tuple[str, str]]
     entrypoint: Path
     field_numbers: list[int]
@@ -417,7 +416,7 @@ class _ParallelStreamingState(_BaseState):
 @dataclass
 class AnalysisContext[
     Params: BaseModel,
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ]:
     """
     数値解析のコンテキスト。
@@ -496,28 +495,20 @@ class AnalysisContext[
             )
 
     def run_analysis_with_preprocess[
-        RawImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsDf: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsFields: NamedTupleLike[Fields],
+        PreprocessedImageAnalysisResults: NamedTupleLike[pd.DataFrame],
         Extra,
     ](
         self,
-        raw_image_analysis_results: Type[RawImageAnalysisResults],
-        preprocessed_image_analysis_results_df: Type[
-            PreprocessedImageAnalysisResultsDf
-        ],
-        preprocessed_image_analysis_results_fields: Type[
-            PreprocessedImageAnalysisResultsFields
-        ],
+        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
-            [PreprocessArgs[Params, RawImageAnalysisResults]],
-            ProcessedInputs[PreprocessedImageAnalysisResultsDf, Extra],
+            [PreprocessArgs[Params, ImageAnalysisResults]],
+            ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
         analyze: Callable[
             [
                 AnalyzeArgsWithPreprocess[
                     Params,
-                    PreprocessedImageAnalysisResultsFields,
+                    PreprocessedImageAnalysisResults,
                     Extra,
                 ]
             ],
@@ -548,51 +539,30 @@ class AnalysisContext[
         stderr = self.state.stderr
 
         try:
-            _validate_namedtuple_fields(
-                self.image_analysis_results._fields,  # type: ignore[attr-defined]
-                raw_image_analysis_results._fields,  # type: ignore[attr-defined]
-                expected_name=self.image_analysis_results.__name__,
-                actual_name=raw_image_analysis_results.__name__,
-            )
-            _validate_namedtuple_fields(
-                preprocessed_image_analysis_results_df._fields,  # type: ignore[attr-defined]
-                preprocessed_image_analysis_results_fields._fields,  # type: ignore[attr-defined]
-                expected_name=preprocessed_image_analysis_results_df.__name__,
-                actual_name=preprocessed_image_analysis_results_fields.__name__,
-            )
             match self.state:
                 case _AnalyzeSeqState():
                     return self._run_analyze_seq_with_preprocess(
-                        raw_image_analysis_results,
-                        preprocessed_image_analysis_results_df,
-                        preprocessed_image_analysis_results_fields,
-                        preprocess,
+                        preprocessed_image_analysis_results,
                         analyze,
                         stdout,
                         stderr,
                     )
                 case _SequentialState():
                     return self._run_sequential_with_preprocess(
-                        raw_image_analysis_results,
-                        preprocessed_image_analysis_results_df,
-                        preprocessed_image_analysis_results_fields,
+                        preprocessed_image_analysis_results,
                         preprocess,
                         analyze,
                         postprocess,
                     )
                 case _ParallelState():
                     return self._run_parallel_with_preprocess(
-                        raw_image_analysis_results,
-                        preprocessed_image_analysis_results_df,
-                        preprocessed_image_analysis_results_fields,
+                        preprocessed_image_analysis_results,
                         preprocess,
                         postprocess,
                     )
                 case _ParallelStreamingState():
                     return self._run_parallel_streaming_with_preprocess(
-                        raw_image_analysis_results,
-                        preprocessed_image_analysis_results_df,
-                        preprocessed_image_analysis_results_fields,
+                        preprocessed_image_analysis_results,
                         preprocess,
                         postprocess,
                         stdout,
@@ -640,28 +610,25 @@ class AnalysisContext[
 
         # Get specs for cleansing
         specs = _get_image_analysis_specs(self.image_analysis_results)
+        cleansed_data = _load_and_cleanse_image_results(
+            parsed.image_analysis_results,
+            specs,
+            serialization="pickle",
+        )
 
         # TARストリームを開く（パイプモード: w|）
         with tarfile.open(fileobj=stdout, mode="w|") as tar:
             # 各ターゲットをシーケンシャルに処理
+            lanes_by_name = _build_lanes_by_result_name(
+                cleansed_data,
+                list(parsed.targets.keys()),
+                field_numbers,
+            )
             for data_name, sample_name in parsed.targets.items():
                 # このターゲット専用のOutput（画像を{data_name}/images/配下に書き込む）
                 output = _TarStreamingOutput(tar, prefix=f"{data_name}/images")
 
                 try:
-                    # データのクレンジングとレーン構築
-                    cleansed_data = _load_and_cleanse_image_results(
-                        parsed.image_analysis_results,
-                        specs,
-                        serialization="pickle",
-                    )
-                    lanes = _build_fields_namedtuple(
-                        self.image_analysis_results,
-                        cleansed_data,
-                        data_name,
-                        field_numbers,
-                    )
-
                     # 解析実行（画像は生成されるたびにTARに書き込まれる）
                     with redirect_stdout_to_stderr(stderr):
                         series = analyze(
@@ -669,7 +636,11 @@ class AnalysisContext[
                                 _copy_params(self.params),
                                 data_name,
                                 sample_name,
-                                lanes,
+                                _build_lane_dataframe_namedtuple(
+                                    self.image_analysis_results,
+                                    lanes_by_name,
+                                    data_name,
+                                ),
                                 output,
                             )
                         )
@@ -698,28 +669,16 @@ class AnalysisContext[
         sys.exit(0)
 
     def _run_analyze_seq_with_preprocess[
-        RawImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsDf: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsFields: NamedTupleLike[Fields],
+        PreprocessedImageAnalysisResults: NamedTupleLike[pd.DataFrame],
         Extra,
     ](
         self,
-        raw_image_analysis_results: Type[RawImageAnalysisResults],
-        preprocessed_image_analysis_results_df: Type[
-            PreprocessedImageAnalysisResultsDf
-        ],
-        preprocessed_image_analysis_results_fields: Type[
-            PreprocessedImageAnalysisResultsFields
-        ],
-        preprocess: Callable[
-            [PreprocessArgs[Params, RawImageAnalysisResults]],
-            ProcessedInputs[PreprocessedImageAnalysisResultsDf, Extra],
-        ],
+        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
         analyze: Callable[
             [
                 AnalyzeArgsWithPreprocess[
                     Params,
-                    PreprocessedImageAnalysisResultsFields,
+                    PreprocessedImageAnalysisResults,
                     Extra,
                 ]
             ],
@@ -741,9 +700,10 @@ class AnalysisContext[
                 parsed.image_analysis_results,
                 serialization="pickle",
             )
-            preprocessed_results = _build_dataframe_namedtuple(
-                preprocessed_image_analysis_results_df,
+            lanes_by_name = _build_lanes_by_result_name(
                 preprocessed_data,
+                list(parsed.targets.keys()),
+                field_numbers,
             )
 
         with tarfile.open(fileobj=stdout, mode="w|") as tar:
@@ -751,12 +711,10 @@ class AnalysisContext[
                 output = _TarStreamingOutput(tar, prefix=f"{data_name}/images")
 
                 try:
-                    lanes = _build_fields_namedtuple_from_preprocessed(
-                        preprocessed_image_analysis_results_df,
-                        preprocessed_image_analysis_results_fields,
-                        preprocessed_results,
+                    lane_data = _build_lane_dataframe_namedtuple(
+                        preprocessed_image_analysis_results,
+                        lanes_by_name,
                         data_name,
-                        field_numbers,
                     )
                     with redirect_stdout_to_stderr(stderr):
                         series = analyze(
@@ -764,7 +722,7 @@ class AnalysisContext[
                                 _copy_params(self.params),
                                 data_name,
                                 sample_name,
-                                lanes,
+                                lane_data,
                                 output,
                                 extra,
                             )
@@ -798,24 +756,22 @@ class AnalysisContext[
     ) -> pd.DataFrame:
         assert isinstance(self.state, _SequentialState)
         state = self.state
-        cleansed_data = state.cleansed_data
+        cleansed_lanes = state.cleansed_lanes
         sample_pairs = state.sample_pairs
-        field_numbers = state.field_numbers
 
         results: list[pd.Series] = []
         for data_name, sample_name in sample_pairs:
-            lanes = _build_fields_namedtuple(
+            lane_data = _build_lane_dataframe_namedtuple(
                 self.image_analysis_results,
-                cleansed_data,
+                cleansed_lanes,
                 data_name,
-                field_numbers,
             )
             series = analyze(
                 AnalyzeArgs(
                     _copy_params(self.params),
                     data_name,
                     sample_name,
-                    lanes,
+                    lane_data,
                     self.output,
                 )
             )
@@ -832,28 +788,20 @@ class AnalysisContext[
         return result_df
 
     def _run_sequential_with_preprocess[
-        RawImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsDf: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsFields: NamedTupleLike[Fields],
+        PreprocessedImageAnalysisResults: NamedTupleLike[pd.DataFrame],
         Extra,
     ](
         self,
-        raw_image_analysis_results: Type[RawImageAnalysisResults],
-        preprocessed_image_analysis_results_df: Type[
-            PreprocessedImageAnalysisResultsDf
-        ],
-        preprocessed_image_analysis_results_fields: Type[
-            PreprocessedImageAnalysisResultsFields
-        ],
+        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
-            [PreprocessArgs[Params, RawImageAnalysisResults]],
-            ProcessedInputs[PreprocessedImageAnalysisResultsDf, Extra],
+            [PreprocessArgs[Params, ImageAnalysisResults]],
+            ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
         analyze: Callable[
             [
                 AnalyzeArgsWithPreprocess[
                     Params,
-                    PreprocessedImageAnalysisResultsFields,
+                    PreprocessedImageAnalysisResults,
                     Extra,
                 ]
             ],
@@ -868,33 +816,36 @@ class AnalysisContext[
     ) -> pd.DataFrame:
         assert isinstance(self.state, _SequentialState)
         state = self.state
-        cleansed_data = state.cleansed_data
+        cleansed_lanes = state.cleansed_lanes
         sample_pairs = state.sample_pairs
         field_numbers = state.field_numbers
         processed_inputs = preprocess(
             _build_preprocess_args(
                 self.params,
-                raw_image_analysis_results,
-                cleansed_data,
+                self.image_analysis_results,
+                cleansed_lanes,
                 {data_name: sample_name for data_name, sample_name in sample_pairs},
             )
+        )
+        preprocessed_lanes = _build_lanes_by_result_name(
+            _namedtuple_to_dict(processed_inputs.image_analysis_results),
+            _target_names(sample_pairs),
+            field_numbers,
         )
 
         results: list[pd.Series] = []
         for data_name, sample_name in sample_pairs:
-            lanes = _build_fields_namedtuple_from_preprocessed(
-                preprocessed_image_analysis_results_df,
-                preprocessed_image_analysis_results_fields,
-                processed_inputs.image_analysis_results,
+            lane_data = _build_lane_dataframe_namedtuple(
+                preprocessed_image_analysis_results,
+                preprocessed_lanes,
                 data_name,
-                field_numbers,
             )
             series = analyze(
                 AnalyzeArgsWithPreprocess(
                     _copy_params(self.params),
                     data_name,
                     sample_name,
-                    lanes,
+                    lane_data,
                     self.output,
                     processed_inputs.extra,
                 )
@@ -957,22 +908,14 @@ class AnalysisContext[
         return result_df
 
     def _run_parallel_with_preprocess[
-        RawImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsDf: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsFields: NamedTupleLike[Fields],
+        PreprocessedImageAnalysisResults: NamedTupleLike[pd.DataFrame],
         Extra,
     ](
         self,
-        raw_image_analysis_results: Type[RawImageAnalysisResults],
-        preprocessed_image_analysis_results_df: Type[
-            PreprocessedImageAnalysisResultsDf
-        ],
-        preprocessed_image_analysis_results_fields: Type[
-            PreprocessedImageAnalysisResultsFields
-        ],
+        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
-            [PreprocessArgs[Params, RawImageAnalysisResults]],
-            ProcessedInputs[PreprocessedImageAnalysisResultsDf, Extra],
+            [PreprocessArgs[Params, ImageAnalysisResults]],
+            ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
         postprocess: Optional[
             Callable[
@@ -1000,8 +943,8 @@ class AnalysisContext[
         processed_inputs = preprocess(
             _build_preprocess_args(
                 self.params,
-                raw_image_analysis_results,
-                state.cleansed_data,
+                self.image_analysis_results,
+                state.cleansed_lanes,
                 {
                     data_name: sample_name
                     for data_name, sample_name in state.sample_pairs
@@ -1107,22 +1050,14 @@ class AnalysisContext[
         sys.exit(0)
 
     def _run_parallel_streaming_with_preprocess[
-        RawImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsDf: NamedTupleLike[pd.DataFrame],
-        PreprocessedImageAnalysisResultsFields: NamedTupleLike[Fields],
+        PreprocessedImageAnalysisResults: NamedTupleLike[pd.DataFrame],
         Extra,
     ](
         self,
-        raw_image_analysis_results: Type[RawImageAnalysisResults],
-        preprocessed_image_analysis_results_df: Type[
-            PreprocessedImageAnalysisResultsDf
-        ],
-        preprocessed_image_analysis_results_fields: Type[
-            PreprocessedImageAnalysisResultsFields
-        ],
+        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
-            [PreprocessArgs[Params, RawImageAnalysisResults]],
-            ProcessedInputs[PreprocessedImageAnalysisResultsDf, Extra],
+            [PreprocessArgs[Params, ImageAnalysisResults]],
+            ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
         postprocess: Optional[
             Callable[
@@ -1158,8 +1093,8 @@ class AnalysisContext[
                     processed_inputs = preprocess(
                         _build_preprocess_args(
                             self.params,
-                            raw_image_analysis_results,
-                            state.cleansed_data,
+                            self.image_analysis_results,
+                            state.cleansed_lanes,
                             {
                                 data_name: sample_name
                                 for data_name, sample_name in state.sample_pairs
@@ -1514,7 +1449,7 @@ class AnalysisContext[
 
 def read_context[
     Params: BaseModel,
-    ImageAnalysisResults: NamedTupleLike[Fields],
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
     params: Type[Params],
     image_analysis_results: Type[ImageAnalysisResults],
@@ -1681,6 +1616,12 @@ def read_context[
         name: _apply_cleansing_pipeline(df, specs[name])
         for name, df in raw_data.items()
     }
+    target_names = _target_names(sample_pairs)
+    cleansed_lanes = _build_lanes_by_result_name(
+        cleansed_data,
+        target_names,
+        field_numbers,
+    )
 
     if mode == "sequential":
         if output_dir_path is None:
@@ -1694,8 +1635,7 @@ def read_context[
             state=_SequentialState(
                 stdout=_stdout,
                 stderr=_stderr,
-                raw_data=raw_data,
-                cleansed_data=cleansed_data,
+                cleansed_lanes=cleansed_lanes,
                 sample_pairs=sample_pairs,
                 field_numbers=field_numbers,
             ),
@@ -1723,7 +1663,7 @@ def read_context[
                 stdout=_stdout,
                 stderr=_stderr,
                 raw_data=raw_data,
-                cleansed_data=cleansed_data,
+                cleansed_lanes=cleansed_lanes,
                 sample_pairs=sample_pairs,
                 output_dir=output_dir_path,
                 entrypoint=entrypoint,
@@ -1739,7 +1679,7 @@ def read_context[
             stdout=_stdout,
             stderr=_stderr,
             raw_data=raw_data,
-            cleansed_data=cleansed_data,
+            cleansed_lanes=cleansed_lanes,
             sample_pairs=sample_pairs,
             entrypoint=entrypoint,
             field_numbers=field_numbers,
@@ -1823,10 +1763,10 @@ def _build_preprocess_args[
 ](
     params: Params,
     image_analysis_results_type: Type[ImageAnalysisResults],
-    cleansed_data: Mapping[str, pd.DataFrame],
+    cleansed_lanes: Mapping[str, Lanes],
     targets: dict[str, str],
 ) -> PreprocessArgs[Params, ImageAnalysisResults]:
-    copied = {name: df.copy() for name, df in cleansed_data.items()}
+    copied = {name: lanes.whole_data.copy() for name, lanes in cleansed_lanes.items()}
     return PreprocessArgs(
         params=_copy_params(params),
         image_analysis_results=_build_dataframe_namedtuple(
@@ -1880,6 +1820,10 @@ def _namedtuple_to_dict(value: NamedTupleLike) -> dict[str, Any]:
     return {name: getattr(value, name) for name in value._fields}
 
 
+def _target_names(sample_pairs: list[tuple[str, str]]) -> list[str]:
+    return list(dict.fromkeys(data_name for data_name, _ in sample_pairs))
+
+
 def _apply_cleansing_pipeline(
     data: pd.DataFrame, spec: _ImageAnalysisResultSpec
 ) -> pd.DataFrame:
@@ -1910,49 +1854,40 @@ def _load_and_cleanse_image_results(
     return cleansed_data
 
 
-def _build_fields_namedtuple[
-    ImageAnalysisResults: NamedTupleLike[Fields],
-](
-    image_analysis_results_type: Type[ImageAnalysisResults],
-    cleansed_data: Mapping[str, pd.DataFrame],
-    data_name: str,
+def _build_lanes_by_result_name(
+    image_results: Mapping[str, pd.DataFrame],
+    target_names: list[str],
     field_numbers: list[int],
-) -> ImageAnalysisResults:
-    lanes: dict[str, Fields] = {}
-    for name, df in cleansed_data.items():
-        lane_iter = scan(
+) -> dict[str, Lanes]:
+    return {
+        name: scan(
             whole_data=df,
-            target_data=[data_name],
+            target_data=target_names,
             field_numbers=field_numbers,
         )
-        lanes[name] = next(iter(lane_iter))
-    return image_analysis_results_type(**lanes)
+        for name, df in image_results.items()
+    }
 
 
-def _build_fields_namedtuple_from_preprocessed[
-    DataFrameImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-    FieldImageAnalysisResults: NamedTupleLike[Fields],
+def _get_lane_from_lanes(lanes: Lanes, data_name: str) -> Fields:
+    for lane in lanes:
+        if lane.data_name == data_name:
+            return lane
+    raise ValueError(f"{data_name} not found in lanes")
+
+
+def _build_lane_dataframe_namedtuple[
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
-    dataframe_type: Type[DataFrameImageAnalysisResults],
-    field_type: Type[FieldImageAnalysisResults],
-    image_analysis_results: DataFrameImageAnalysisResults,
+    image_analysis_results_type: Type[ImageAnalysisResults],
+    lanes_by_name: Mapping[str, Lanes],
     data_name: str,
-    field_numbers: list[int],
-) -> FieldImageAnalysisResults:
-    _validate_namedtuple_fields(
-        dataframe_type._fields,
-        field_type._fields,
-        expected_name=dataframe_type.__name__,
-        actual_name=field_type.__name__,
-    )
-    _validate_namedtuple_fields(
-        dataframe_type._fields,
-        image_analysis_results._fields,
-        expected_name=dataframe_type.__name__,
-        actual_name=type(image_analysis_results).__name__,
-    )
-    dataframes = _namedtuple_to_dict(image_analysis_results)
-    return _build_fields_namedtuple(field_type, dataframes, data_name, field_numbers)
+) -> ImageAnalysisResults:
+    lane_data = {
+        name: _get_lane_from_lanes(lanes, data_name).data.copy()
+        for name, lanes in lanes_by_name.items()
+    }
+    return _build_dataframe_namedtuple(image_analysis_results_type, lane_data)
 
 
 def _ensure_result_annotations(series: pd.Series, data_name: str, sample_name: str):

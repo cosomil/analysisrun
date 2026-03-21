@@ -17,18 +17,14 @@ class Params(BaseModel):
 
 
 class ImageAnalysisResults(NamedTuple):
-    activity_spots: ar.Fields = ar.image_analysis_result_spec(
+    activity_spots: pd.DataFrame = ar.image_analysis_result_spec(
         description="Activity spots",
         cleansing=ar.entity_filter("Activity Spots"),
     )
 
 
-class RawImageAnalysisResults(NamedTuple):
+class PreprocessedImageAnalysisResults(NamedTuple):
     activity_spots: pd.DataFrame
-
-
-class PreprocessedImageAnalysisResults[T](NamedTuple):
-    activity_spots_modified: T
 
 
 @dataclass
@@ -37,17 +33,15 @@ class Extra:
 
 
 def preprocess(
-    args: ar.PreprocessArgs[Params, RawImageAnalysisResults],
-) -> ar.ProcessedInputs[PreprocessedImageAnalysisResults[pd.DataFrame], Extra]:
+    args: ar.PreprocessArgs[Params, ImageAnalysisResults],
+) -> ar.ProcessedInputs[PreprocessedImageAnalysisResults, Extra]:
     df = args.image_analysis_results.activity_spots.copy()
     df["scaled_value"] = df["Value"] * args.params.threshold
     max_value = float(df["scaled_value"].max())
     df["scaled_ratio"] = df["scaled_value"] / max_value if max_value else 0.0
 
     return ar.ProcessedInputs(
-        image_analysis_results=PreprocessedImageAnalysisResults[pd.DataFrame](
-            activity_spots_modified=df
-        ),
+        image_analysis_results=PreprocessedImageAnalysisResults(activity_spots=df),
         extra=Extra(target_count=int(len(df))),
     )
 
@@ -55,20 +49,21 @@ def preprocess(
 def analyze(
     args: ar.AnalyzeArgsWithPreprocess[
         Params,
-        PreprocessedImageAnalysisResults[ar.Fields],
+        PreprocessedImageAnalysisResults,
         Extra,
     ],
 ) -> pd.Series:
-    fields = args.image_analysis_results.activity_spots_modified
-    df = fields.data
+    df = args.image_analysis_results.activity_spots
+    fields = ar.scan_fields(df, args.data_name)
 
     return pd.Series(
         {
             "sample_name": args.sample_name,
-            "spot_count": int(len(df)),
+            "spot_count": len(df),
             "scaled_value_sum": float(df["scaled_value"].sum()),
             "scaled_ratio_mean": float(df["scaled_ratio"].mean()),
             "target_count": args.extra.target_count,
+            "image_analysis_method": fields.image_analysis_method,
         }
     )
 
@@ -99,13 +94,7 @@ def main() -> None:
     )
 
     result = ctx.run_analysis_with_preprocess(
-        raw_image_analysis_results=RawImageAnalysisResults,
-        preprocessed_image_analysis_results_df=PreprocessedImageAnalysisResults[
-            pd.DataFrame
-        ],
-        preprocessed_image_analysis_results_fields=PreprocessedImageAnalysisResults[
-            ar.Fields
-        ],
+        preprocessed_image_analysis_results=PreprocessedImageAnalysisResults,
         preprocess=preprocess,
         analyze=analyze,
         postprocess=postprocess,

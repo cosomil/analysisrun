@@ -1,3 +1,3 @@
-sample_name,spot_count,scaled_value_sum,scaled_ratio_mean,target_count,data,threshold,is_valid
-SampleA,26,304746.0,0.5659858032739389,50,0000,3,True
-SampleB,24,288375.0,0.5802127094499976,50,0001,3,True
+sample_name,spot_count,scaled_value_sum,scaled_ratio_mean,target_count,image_analysis_method,data,threshold,is_valid
+SampleA,26,304746.0,0.5659858032739389,50,ImgAnalysisV1,0000,3,True
+SampleB,24,288375.0,0.5802127094499976,50,ImgAnalysisV1,0001,3,True

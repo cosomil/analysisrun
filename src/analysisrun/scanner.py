@@ -183,3 +183,48 @@ def scan(
         target_data=target_data,
         field_numbers=field_numbers or [i + 1 for i in range(12)],
     )
+
+
+def scan_fields(
+    data: pd.DataFrame,
+    data_name: str,
+    field_numbers: Optional[List[int]] = None,
+) -> Fields:
+    """
+    正規化済みDataFrameから単一レーンのFieldsを復元する。
+
+    Parameters
+    ----------
+    data
+        正規化済みDataFrame。`Data` 列と `ImageAnalysisMethod` 列を含む必要がある。
+    data_name
+        復元対象のデータ名。
+    field_numbers
+        スキャン対象となる視野番号のリスト（指定しない場合は1から12までの視野が対象）
+    """
+
+    required_columns = {"Data", "ImageAnalysisMethod"}
+    missing_columns = required_columns - set(data.columns)
+    if missing_columns:
+        raise ValueError(
+            "scan_fields requires a normalized DataFrame with Data and "
+            f"ImageAnalysisMethod columns: missing {sorted(missing_columns)}"
+        )
+
+    lane_data = data[data["Data"] == data_name]
+    if lane_data.empty:
+        raise ValueError(f"scan_fields could not find data_name={data_name!r}")
+
+    methods = lane_data["ImageAnalysisMethod"].dropna().astype(str).unique()
+    if len(methods) != 1 or methods[0] == "":
+        raise ValueError(
+            "scan_fields could not determine a unique image_analysis_method "
+            f"for data_name={data_name!r}"
+        )
+
+    return Fields(
+        name=data_name,
+        image_analysis_method=methods[0],
+        data=lane_data,
+        field_numbers=field_numbers or [i + 1 for i in range(12)],
+    )
