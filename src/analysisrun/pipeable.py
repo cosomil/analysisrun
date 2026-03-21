@@ -41,7 +41,7 @@ from analysisrun.pipeable_io import (
     exit_with_error_streaming,
     redirect_stdout_to_stderr,
 )
-from analysisrun.scanner import Fields, Lanes, scan
+from analysisrun.scanner import Lanes, scan
 from analysisrun.tar import FileIO, create_tar_from_dict, read_tar_as_dict
 
 
@@ -1860,13 +1860,6 @@ def _build_lanes_by_result_name(
     }
 
 
-def _get_lane_from_lanes(lanes: Lanes, data_name: str) -> Fields:
-    for lane in lanes:
-        if lane.data_name == data_name:
-            return lane
-    raise ValueError(f"{data_name} not found in lanes")
-
-
 def _build_lane_dataframe_namedtuple[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
@@ -1875,7 +1868,7 @@ def _build_lane_dataframe_namedtuple[
     data_name: str,
 ) -> ImageAnalysisResults:
     lane_data = {
-        name: _get_lane_from_lanes(lanes, data_name).data.copy()
+        name: lanes.get(data_name).data.copy()
         for name, lanes in lanes_by_name.items()
     }
     return _build_dataframe_namedtuple(image_analysis_results_type, lane_data)

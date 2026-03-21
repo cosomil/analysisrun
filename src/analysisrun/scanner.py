@@ -140,20 +140,32 @@ class Lanes:
             )
         self.target_data = target_data
         self.field_numbers = field_numbers
+        self._target_data_set = set(target_data)
+        self._empty_lane_data = self.whole_data.iloc[0:0]
+        # Data列から一度だけ索引を構築し、レーンごとの再フィルタリングを避ける
+        self._lane_data_by_name = {
+            name: lane_data
+            for name, lane_data in self.whole_data.groupby("Data", sort=False)
+            if name in self._target_data_set
+        }
         return
 
-    def __iter__(self):
-        return (
-            Fields(
-                name=name,
-                data=(data := self.whole_data[self.whole_data["Data"] == name]),
-                image_analysis_method=""
-                if len(data) == 0
-                else data.iloc[0, :].loc["ImageAnalysisMethod"],
-                field_numbers=self.field_numbers,
-            )
-            for name in self.target_data
+    def get(self, data_name: str) -> Fields:
+        if data_name not in self._target_data_set:
+            raise ValueError(f"{data_name} not found in lanes")
+
+        data = self._lane_data_by_name.get(data_name, self._empty_lane_data)
+        return Fields(
+            name=data_name,
+            data=data,
+            image_analysis_method=""
+            if data.empty
+            else data.iloc[0, :].loc["ImageAnalysisMethod"],
+            field_numbers=self.field_numbers,
         )
+
+    def __iter__(self):
+        return (self.get(name) for name in self.target_data)
 
 
 def scan(

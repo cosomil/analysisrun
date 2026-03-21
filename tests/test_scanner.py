@@ -229,6 +229,60 @@ def test_lanes_iteration():
     assert all(lane2.data["Data"] == "data2")
 
 
+def test_lanes_get_returns_cached_lane_for_target():
+    test_data = pd.DataFrame(
+        {
+            "Filename": [
+                "method1_000_data1.csv",
+                "method1_000_data1.csv",
+                "method2_000_data2.txt",
+            ],
+            "MultiPointIndex": [1, 2, 1],
+            "Value": [10, 20, 30],
+        }
+    )
+
+    lanes = Lanes(
+        whole_data=CleansedData(_data=test_data),
+        target_data=["data1", "data_missing"],
+        field_numbers=[1, 2],
+    )
+
+    lane = lanes.get("data1")
+    empty_lane = lanes.get("data_missing")
+
+    assert lane.data_name == "data1"
+    assert lane.image_analysis_method == "method1"
+    assert len(lane.data) == 2
+    assert empty_lane.data_name == "data_missing"
+    assert empty_lane.image_analysis_method == ""
+    assert empty_lane.data.empty
+    assert list(empty_lane.data.columns) == list(lanes.whole_data.columns)
+
+
+def test_lanes_get_raises_for_non_target_data_name():
+    test_data = pd.DataFrame(
+        {
+            "Filename": ["method1_000_data1.csv"],
+            "MultiPointIndex": [1],
+            "Value": [10],
+        }
+    )
+
+    lanes = Lanes(
+        whole_data=CleansedData(_data=test_data),
+        target_data=["data1"],
+        field_numbers=[1],
+    )
+
+    try:
+        lanes.get("data2")
+    except ValueError as exc:
+        assert "data2 not found in lanes" == str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
 def test_scan_fields_restores_fields_from_normalized_dataframe():
     data = pd.DataFrame(
         {
