@@ -1622,9 +1622,31 @@ def read_context[
                 _stderr,
                 exc,
             )
+    elif manual_input is not None:
+        if interactivity == "notebook":
+            mode = "sequential"
+        else:
+            mode = "parallel-entrypoint"
+        try:
+            iar_input = image_analysis_results_input_model(
+                **manual_input.image_analysis_results
+            )
+            runtime_input = RuntimeInputModel(
+                image_analysis_results=iar_input,
+                sample_names=manual_input.sample_names,  # type: ignore
+                params=manual_input.params,
+            )
+        except ValidationError as exc:
+            exit_with_error(
+                ExitCodes.INVALID_USAGE,
+                "manual_inputの形式が正しくありません。",
+                _stdout,
+                _stderr,
+                exc,
+            )
     else:
         mode = "sequential" if interactivity == "notebook" else "parallel-entrypoint"
-        if mode == "sequential" and manual_input is None:
+        if mode == "sequential":
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
                 "Jupyter notebook環境ではmanual_inputの指定が必須です。",
@@ -1632,28 +1654,8 @@ def read_context[
                 _stderr,
             )
 
-        # 分散実行でない場合はPythonオブジェクトとして入力を渡せるため、まずそれを優先して検証する。
-        if manual_input is not None:
-            try:
-                iar_input = image_analysis_results_input_model(
-                    **manual_input.image_analysis_results
-                )
-                runtime_input = RuntimeInputModel(
-                    image_analysis_results=iar_input,
-                    sample_names=manual_input.sample_names,  # type: ignore
-                    params=manual_input.params,
-                )
-            except ValidationError as exc:
-                exit_with_error(
-                    ExitCodes.INVALID_USAGE,
-                    "manual_inputの形式が正しくありません。",
-                    _stdout,
-                    _stderr,
-                    exc,
-                )
-        else:
-            # CLI等ではインタラクティブな入力を通じてRuntimeInputModelを組み立てる。
-            runtime_input = scan_model_input(RuntimeInputModel)
+        # CLI等ではインタラクティブな入力を通じてRuntimeInputModelを組み立てる。
+        runtime_input = scan_model_input(RuntimeInputModel)
 
     raw_data = _load_image_results_raw(
         runtime_input.image_analysis_results,
