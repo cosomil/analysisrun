@@ -5,6 +5,10 @@ import pandas as pd
 from .cleansing import CleansedData
 
 
+def _raise_missing_columns(context: str, missing_columns: set[str]) -> None:
+    raise ValueError(f"{context}: missing {sorted(missing_columns)}")
+
+
 class Fields:
     """
     レーンのデータを視野ごとにスキャンする
@@ -34,6 +38,12 @@ class Fields:
         skip_empty_fields
             データのない視野をスキップするかどうか
         """
+
+        missing_columns = {"MultiPointIndex"} - set(data.columns)
+        if missing_columns:
+            _raise_missing_columns(
+                "Fields requires MultiPointIndex column", missing_columns
+            )
 
         self.data_name = name
         self.image_analysis_method = image_analysis_method
@@ -104,6 +114,12 @@ class Lanes:
         """
 
         data = whole_data._data
+        missing_columns = {"MultiPointIndex"} - set(data.columns)
+        if missing_columns:
+            _raise_missing_columns(
+                "Lanes requires MultiPointIndex column", missing_columns
+            )
+
         # 既に必要な派生列があれば再代入せずそのまま使う
         if {"ImageAnalysisMethod", "Data"}.issubset(data.columns):
             self.whole_data = data
@@ -111,6 +127,12 @@ class Lanes:
         elif data.empty:
             self.whole_data = data.assign(ImageAnalysisMethod="", Data="")
         else:
+            missing_columns = {"Filename"} - set(data.columns)
+            if missing_columns:
+                _raise_missing_columns(
+                    "Lanes requires Filename when ImageAnalysisMethod/Data are absent",
+                    missing_columns,
+                )
             split_data = data["Filename"].str.split("_000_", n=1, expand=True)
             self.whole_data = data.assign(
                 ImageAnalysisMethod=split_data[0],
@@ -196,19 +218,21 @@ def scan_fields(
     Parameters
     ----------
     data
-        正規化済みDataFrame。`Data` 列と `ImageAnalysisMethod` 列を含む必要がある。
+        正規化済みDataFrame。`Data` 列、`ImageAnalysisMethod` 列、
+        `MultiPointIndex` 列を含む必要がある。
     data_name
         復元対象のデータ名。
     field_numbers
         スキャン対象となる視野番号のリスト（指定しない場合は1から12までの視野が対象）
     """
 
-    required_columns = {"Data", "ImageAnalysisMethod"}
+    required_columns = {"Data", "ImageAnalysisMethod", "MultiPointIndex"}
     missing_columns = required_columns - set(data.columns)
     if missing_columns:
         raise ValueError(
-            "scan_fields requires a normalized DataFrame with Data and "
-            f"ImageAnalysisMethod columns: missing {sorted(missing_columns)}"
+            "scan_fields requires a normalized DataFrame with Data, "
+            "ImageAnalysisMethod, and MultiPointIndex columns: "
+            f"missing {sorted(missing_columns)}"
         )
 
     lane_data = data[data["Data"] == data_name]

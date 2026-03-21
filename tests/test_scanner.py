@@ -69,6 +69,22 @@ def test_fields_iteration():
     assert list(field3_data["Value"]) == [50]
 
 
+def test_fields_requires_multipointindex():
+    data = pd.DataFrame({"Value": [10, 20]})
+
+    try:
+        Fields(
+            name="test_data",
+            image_analysis_method="test_method",
+            data=data,
+            field_numbers=[1],
+        )
+    except ValueError as exc:
+        assert "MultiPointIndex" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
 def test_fields_with_empty_fields():
     """空の視野が含まれる場合のテスト"""
     # テストデータの作成（視野2にはデータなし）
@@ -247,6 +263,23 @@ def test_scan_fields_requires_normalized_dataframe():
         raise AssertionError("ValueError was not raised")
 
 
+def test_scan_fields_requires_multipointindex():
+    data = pd.DataFrame(
+        {
+            "Data": ["data1"],
+            "ImageAnalysisMethod": ["method1"],
+            "Value": [10],
+        }
+    )
+
+    try:
+        scan_fields(data, "data1")
+    except ValueError as exc:
+        assert "MultiPointIndex" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
 def test_scan_fields_requires_unique_image_analysis_method():
     data = pd.DataFrame(
         {
@@ -317,6 +350,30 @@ def test_lanes_with_empty_dataframe_sets_columns():
     assert "Data" in lanes.whole_data.columns
     assert list(lanes.whole_data["ImageAnalysisMethod"]) == []
     assert list(lanes.whole_data["Data"]) == []
+
+
+def test_lanes_require_filename_when_derived_columns_are_absent():
+    test_data = pd.DataFrame({"Value": [10]})
+    cleansed_data = CleansedData(_data=test_data)
+
+    try:
+        Lanes(whole_data=cleansed_data, target_data=["data1"], field_numbers=[1])
+    except ValueError as exc:
+        assert "MultiPointIndex" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
+def test_lanes_require_filename_when_derived_columns_are_absent_and_multipointindex_exists():
+    test_data = pd.DataFrame({"MultiPointIndex": [1], "Value": [10]})
+    cleansed_data = CleansedData(_data=test_data)
+
+    try:
+        Lanes(whole_data=cleansed_data, target_data=["data1"], field_numbers=[1])
+    except ValueError as exc:
+        assert "Filename" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
 
 
 def test_lanes_uses_existing_columns_without_reassign():
