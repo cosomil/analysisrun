@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from threading import Lock, Thread
@@ -96,6 +96,7 @@ class ManualInput[Params: BaseModel]:
 
 
 CleansingFunc = Callable[[pd.DataFrame | CleansedData], CleansedData]
+NonEmptyCleansingPipeline = tuple[CleansingFunc, *tuple[CleansingFunc, ...]]
 _ImageResultsSerialization = Literal["csv", "pickle"]
 
 
@@ -106,19 +107,26 @@ class _ImageAnalysisResultSpec:
     """
 
     description: str
-    cleansing: tuple[CleansingFunc, ...] = field(default_factory=tuple)
+    cleansing: NonEmptyCleansingPipeline
 
 
 def image_analysis_result_spec(
-    description: str, cleansing: CleansingFunc | tuple[CleansingFunc, ...]
+    description: str,
+    cleansing: CleansingFunc | NonEmptyCleansingPipeline,
 ) -> Any:
     """
     画像解析結果フィールドの仕様を定義する。
 
     """
+    normalized_cleansing = (
+        cleansing if isinstance(cleansing, tuple) else (cleansing,)
+    )
+    if len(normalized_cleansing) == 0:
+        raise ValueError("cleansing must contain at least one function")
+
     return _ImageAnalysisResultSpec(
         description=description,
-        cleansing=cleansing if isinstance(cleansing, tuple) else (cleansing,),
+        cleansing=normalized_cleansing,
     )
 
 
