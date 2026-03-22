@@ -396,7 +396,7 @@ class _SequentialState(_BaseState):
 
 @dataclass
 class _ParallelState(_BaseState):
-    raw_data: dict[str, pd.DataFrame]
+    image_data: dict[str, pd.DataFrame]
     cleansed_lanes: dict[str, Lanes]
     sample_pairs: list[tuple[str, str]]
     output_dir: Path
@@ -406,7 +406,7 @@ class _ParallelState(_BaseState):
 
 @dataclass
 class _ParallelStreamingState(_BaseState):
-    raw_data: dict[str, pd.DataFrame]
+    image_data: dict[str, pd.DataFrame]
     cleansed_lanes: dict[str, Lanes]
     sample_pairs: list[tuple[str, str]]
     entrypoint: Path
@@ -608,11 +608,8 @@ class AnalysisContext[
         parsed: AnalyzeSeqInputModel = state.parsed_input
         field_numbers = state.field_numbers
 
-        # Get specs for cleansing
-        specs = _get_image_analysis_specs(self.image_analysis_results)
-        cleansed_data = _load_and_cleanse_image_results(
+        image_data = _load_image_results_raw(
             parsed.image_analysis_results,
-            specs,
             serialization="pickle",
         )
 
@@ -620,7 +617,7 @@ class AnalysisContext[
         with tarfile.open(fileobj=stdout, mode="w|") as tar:
             # 各ターゲットをシーケンシャルに処理
             lanes_by_name = _build_lanes_by_result_name(
-                cleansed_data,
+                image_data,
                 list(parsed.targets.keys()),
                 field_numbers,
             )
@@ -887,7 +884,7 @@ class AnalysisContext[
                 _save_image_bytes_to_dir(image_name, image_bytes, output_dir)
 
         result_df, images_by_data = self._run_parallel_entrypoint(
-            raw_data=state.raw_data,
+            image_data=state.image_data,
             sample_pairs=state.sample_pairs,
             entrypoint=state.entrypoint,
             stdout=state.stdout,
@@ -952,7 +949,7 @@ class AnalysisContext[
             )
         )
         result_df, images_by_data = self._run_parallel_entrypoint(
-            raw_data=_namedtuple_to_dict(processed_inputs.image_analysis_results),
+            image_data=_namedtuple_to_dict(processed_inputs.image_analysis_results),
             sample_pairs=state.sample_pairs,
             entrypoint=state.entrypoint,
             stdout=state.stdout,
@@ -1006,7 +1003,7 @@ class AnalysisContext[
 
             try:
                 result_df, errors = self._run_parallel_entrypoint_streaming(
-                    raw_data=state.raw_data,
+                    image_data=state.image_data,
                     sample_pairs=state.sample_pairs,
                     entrypoint=state.entrypoint,
                     preprocessed_data=None,
@@ -1103,7 +1100,7 @@ class AnalysisContext[
                     )
 
                 result_df, errors = self._run_parallel_entrypoint_streaming(
-                    raw_data=_namedtuple_to_dict(
+                    image_data=_namedtuple_to_dict(
                         processed_inputs.image_analysis_results
                     ),
                     sample_pairs=state.sample_pairs,
@@ -1154,7 +1151,7 @@ class AnalysisContext[
 
     def _run_parallel_entrypoint_streaming(
         self,
-        raw_data: dict[str, pd.DataFrame],
+        image_data: dict[str, pd.DataFrame],
         sample_pairs: list[tuple[str, str]],
         entrypoint: Path,
         preprocessed_data: Any | None,
@@ -1175,7 +1172,7 @@ class AnalysisContext[
             tar_buf = _build_analyze_seq_tar_buffer(
                 params_payload,
                 targets,
-                raw_data,
+                image_data,
                 preprocessed_data=preprocessed_data,
                 include_preprocessed_data=include_preprocessed_data,
             )
@@ -1242,7 +1239,7 @@ class AnalysisContext[
 
     def _run_parallel_entrypoint(
         self,
-        raw_data: dict[str, pd.DataFrame],
+        image_data: dict[str, pd.DataFrame],
         sample_pairs: list[tuple[str, str]],
         entrypoint: Path,
         stdout: IO[bytes],
@@ -1270,7 +1267,7 @@ class AnalysisContext[
             tar_buf = _build_analyze_seq_tar_buffer(
                 params_payload,
                 targets,
-                raw_data,
+                image_data,
                 preprocessed_data=preprocessed_data,
                 include_preprocessed_data=include_preprocessed_data,
             )
@@ -1662,7 +1659,7 @@ def read_context[
             state=_ParallelState(
                 stdout=_stdout,
                 stderr=_stderr,
-                raw_data=raw_data,
+                image_data=cleansed_data,
                 cleansed_lanes=cleansed_lanes,
                 sample_pairs=sample_pairs,
                 output_dir=output_dir_path,
@@ -1678,7 +1675,7 @@ def read_context[
         state=_ParallelStreamingState(
             stdout=_stdout,
             stderr=_stderr,
-            raw_data=raw_data,
+            image_data=cleansed_data,
             cleansed_lanes=cleansed_lanes,
             sample_pairs=sample_pairs,
             entrypoint=entrypoint,

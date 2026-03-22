@@ -640,7 +640,9 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
         sample_names=samples_csv,
     )
 
-    expected_rows = len(pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV))
+    expected_rows = len(
+        pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV).query("Entity == 'Activity Spots'")
+    )
     calls: list[list[tuple[str, str]]] = []
 
     def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
