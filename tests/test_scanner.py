@@ -491,7 +491,7 @@ def test_lanes_with_empty_dataframe_sets_columns():
     assert list(lanes.whole_data["Data"]) == []
 
 
-def test_lanes_require_filename_when_derived_columns_are_absent():
+def test_lanes_require_multipointindex():
     test_data = pd.DataFrame({"Value": [10]})
     cleansed_data = CleansedData(_data=test_data)
 
@@ -503,7 +503,7 @@ def test_lanes_require_filename_when_derived_columns_are_absent():
         raise AssertionError("ValueError was not raised")
 
 
-def test_lanes_require_filename_when_derived_columns_are_absent_and_multipointindex_exists():
+def test_lanes_require_filename_when_derived_columns_are_absent():
     test_data = pd.DataFrame({"MultiPointIndex": [1], "Value": [10]})
     cleansed_data = CleansedData(_data=test_data)
 
