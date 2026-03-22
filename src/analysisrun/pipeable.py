@@ -1819,12 +1819,9 @@ def _apply_cleansing_pipeline(
 
     if isinstance(cleansed, CleansedData):
         return cleansed._data
-    if isinstance(cleansed, pd.DataFrame):
-        return cleansed
 
     raise TypeError(  # type: ignore
-        "cleansing function must return a pandas.DataFrame or CleansedData, "
-        f"got {type(cleansed)!r}"
+        f"cleansing function must return a CleansedData, got {type(cleansed)!r}"
     )
 
 
@@ -1868,8 +1865,7 @@ def _build_lane_dataframe_namedtuple[
     data_name: str,
 ) -> ImageAnalysisResults:
     lane_data = {
-        name: lanes.get(data_name).data.copy()
-        for name, lanes in lanes_by_name.items()
+        name: lanes.get(data_name).data.copy() for name, lanes in lanes_by_name.items()
     }
     return _build_dataframe_namedtuple(image_analysis_results_type, lane_data)
 
