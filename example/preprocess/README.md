@@ -11,7 +11,7 @@ uv run python -m example.preprocess
 - `preprocess`: CSV から読み込んだ DataFrame に `scaled_value` と `scaled_ratio` を追加する
 - `preprocess`: `extra` として `threshold` と対象レーン数を返す
 - `analyze`: 前処理済み DataFrame と `extra` を使ってレーン単位の集計を行う
-- `scan_fields`: 必要なときだけ正規化済み DataFrame から `Fields` を復元する
+- `scan_fields`: 必要なときだけ正規化済み DataFrame から一貫した検証付きで `Fields` を復元する
 - `postprocess`: 全レーンの解析結果に `threshold` を付与する
 
 結果は `example/preprocess/output/result.csv` に出力されます。

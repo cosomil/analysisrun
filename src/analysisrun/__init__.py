@@ -12,13 +12,12 @@ from analysisrun.pipeable import (
     image_analysis_result_spec,
     read_context,
 )
-from analysisrun.scanner import Fields, scan_fields
+from analysisrun.scanner import scan_fields
 
 __all__ = [
     "AnalysisContext",
     "AnalyzeArgs",
     "AnalyzeArgsWithPreprocess",
-    "Fields",
     "ManualInput",
     "PreprocessArgs",
     "ProcessedInputs",

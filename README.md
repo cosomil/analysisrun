@@ -36,6 +36,7 @@ def analyze(
     args: ar.AnalyzeArgs[Params, ImageAnalysisResults],
 ) -> pd.Series:
     df = args.image_analysis_results.activity_spots
+    # Fields は直接生成せず、scan_fields から復元する
     fields = ar.scan_fields(df, args.data_name)
     lane_name = fields.data_name
 

@@ -2,6 +2,7 @@
 scanner.pyのテストコード
 """
 
+import analysisrun
 import pandas as pd
 
 from analysisrun.cleansing import CleansedData
@@ -300,6 +301,24 @@ def test_scan_fields_restores_fields_from_normalized_dataframe():
     assert len(fields.data) == 2
 
 
+def test_scan_fields_returns_empty_fields_for_missing_data_name():
+    data = pd.DataFrame(
+        {
+            "Data": ["data1"],
+            "ImageAnalysisMethod": ["method1"],
+            "MultiPointIndex": [1],
+            "Value": [10],
+        }
+    )
+
+    fields = scan_fields(data, "data_missing")
+
+    assert fields.data_name == "data_missing"
+    assert fields.image_analysis_method == ""
+    assert fields.data.empty
+    assert list(fields.data.columns) == list(data.columns)
+
+
 def test_scan_fields_requires_normalized_dataframe():
     data = pd.DataFrame(
         {
@@ -347,7 +366,25 @@ def test_scan_fields_requires_unique_image_analysis_method():
     try:
         scan_fields(data, "data1")
     except ValueError as exc:
-        assert "unique image_analysis_method" in str(exc)
+        assert "unique non-empty image_analysis_method" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
+def test_scan_fields_requires_non_empty_image_analysis_method():
+    data = pd.DataFrame(
+        {
+            "Data": ["data1"],
+            "ImageAnalysisMethod": [""],
+            "MultiPointIndex": [1],
+            "Value": [10],
+        }
+    )
+
+    try:
+        scan_fields(data, "data1")
+    except ValueError as exc:
+        assert "unique non-empty image_analysis_method" in str(exc)
     else:
         raise AssertionError("ValueError was not raised")
 
@@ -389,6 +426,54 @@ def test_lanes_with_empty_data():
     assert lane2.data_name == "data_nonexistent"
     assert lane2.image_analysis_method == ""  # 空の場合は空文字列
     assert len(lane2.data) == 0
+
+
+def test_lanes_get_requires_unique_image_analysis_method():
+    test_data = pd.DataFrame(
+        {
+            "Data": ["data1", "data1"],
+            "ImageAnalysisMethod": ["method1", "method2"],
+            "MultiPointIndex": [1, 2],
+            "Value": [10, 20],
+        }
+    )
+
+    lanes = Lanes(
+        whole_data=CleansedData(_data=test_data),
+        target_data=["data1"],
+        field_numbers=[1, 2],
+    )
+
+    try:
+        lanes.get("data1")
+    except ValueError as exc:
+        assert "unique non-empty image_analysis_method" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
+
+
+def test_lanes_get_requires_non_empty_image_analysis_method():
+    test_data = pd.DataFrame(
+        {
+            "Data": ["data1"],
+            "ImageAnalysisMethod": [""],
+            "MultiPointIndex": [1],
+            "Value": [10],
+        }
+    )
+
+    lanes = Lanes(
+        whole_data=CleansedData(_data=test_data),
+        target_data=["data1"],
+        field_numbers=[1],
+    )
+
+    try:
+        lanes.get("data1")
+    except ValueError as exc:
+        assert "unique non-empty image_analysis_method" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
 
 
 def test_lanes_with_empty_dataframe_sets_columns():
@@ -560,3 +645,8 @@ def test_integration_lanes_and_fields():
     # 視野3のデータ（空）
     field3_data = fields2[2]
     assert len(field3_data) == 0
+
+
+def test_root_module_does_not_export_fields():
+    assert "Fields" not in analysisrun.__all__
+    assert not hasattr(analysisrun, "Fields")
