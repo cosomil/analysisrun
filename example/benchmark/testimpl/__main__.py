@@ -10,7 +10,6 @@ import pandas as pd
 from pydantic import BaseModel
 
 import analysisrun as ar
-from analysisrun.scanner import Fields
 
 matplotlib.use("Agg")
 plt.rcParams.update(
@@ -44,7 +43,7 @@ class BenchParameters(BaseModel):
 
 
 class BenchImageAnalysisResults(NamedTuple):
-    activity_spots: Fields = ar.image_analysis_result_spec(
+    activity_spots: pd.DataFrame = ar.image_analysis_result_spec(
         description="Activity spots",
         cleansing=ar.entity_filter("Activity Spots"),
     )
@@ -74,7 +73,8 @@ def analyze(
     args: ar.AnalyzeArgs[BenchParameters, BenchImageAnalysisResults],
 ) -> pd.Series:
     params = args.params
-    fields = args.image_analysis_results.activity_spots
+    df = args.image_analysis_results.activity_spots
+    fields = ar.scan_fields(df, args.data_name)
     output = args.output
 
     series_by_field: list[np.ndarray] = []

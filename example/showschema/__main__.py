@@ -1,6 +1,7 @@
 import os
 from typing import NamedTuple
 
+import pandas as pd
 from pydantic import BaseModel
 
 import analysisrun as ar
@@ -11,7 +12,7 @@ class Params(BaseModel):
 
 
 class ImageAnalysisResults(NamedTuple):
-    activity_spots: ar.Fields = ar.image_analysis_result_spec(
+    activity_spots: pd.DataFrame = ar.image_analysis_result_spec(
         description="Activity spots",
         cleansing=ar.entity_filter("Activity Spots"),
     )

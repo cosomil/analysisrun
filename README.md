@@ -26,7 +26,7 @@ class Params(BaseModel):
 
 
 class ImageAnalysisResults(NamedTuple):
-    activity_spots: ar.Fields = ar.image_analysis_result_spec(
+    activity_spots: pd.DataFrame = ar.image_analysis_result_spec(
         description="Activity spots",
         cleansing=ar.entity_filter("Activity Spots"),
     )
@@ -35,15 +35,17 @@ class ImageAnalysisResults(NamedTuple):
 def analyze(
     args: ar.AnalyzeArgs[Params, ImageAnalysisResults],
 ) -> pd.Series:
-    fields = args.image_analysis_results.activity_spots
+    df = args.image_analysis_results.activity_spots
+    # Fields は直接生成せず、scan_fields から復元する
+    fields = ar.scan_fields(df, args.data_name)
     lane_name = fields.data_name
 
     # 各レーンの解析を実装する
-    area_mean = fields.area.mean()
+    area_mean = df["Area"].mean()
     ok = area_mean >= args.params.threshold
 
     fig, ax = plt.subplots()
-    ax.hist(fields.area)
+    ax.hist(df["Area"])
     ax.set_title(f"Area Histogram: {lane_name}")
     ax.set_xlabel("area")
     ax.set_ylabel("count")

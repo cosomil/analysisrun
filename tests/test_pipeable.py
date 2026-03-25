@@ -19,12 +19,12 @@ from pydantic import BaseModel
 
 from analysisrun.pipeable import (
     ManualInput,
+    ProcessedInputs,
     create_image_analysis_results_input_model,
     entity_filter,
     image_analysis_result_spec,
     read_context,
 )
-from analysisrun.scanner import Fields
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 
 DATA_DIR = Path(__file__).parent / "testdata"
@@ -37,10 +37,14 @@ class Params(BaseModel):
 
 
 class ImageResults(NamedTuple):
-    activity_spots: Fields = image_analysis_result_spec(
+    activity_spots: pd.DataFrame = image_analysis_result_spec(
         description="Activity spots",
         cleansing=entity_filter("Activity Spots"),
     )
+
+
+class PreprocessedImageResultsDf(NamedTuple):
+    activity_spots: pd.DataFrame
 
 
 def _load_pickle_df(path: Path) -> BytesIO:
@@ -103,7 +107,7 @@ def _build_streaming_input_tar(
 
 def test_create_image_analysis_results_input_model_requires_spec():
     class InvalidImageResults(NamedTuple):
-        activity_spots: Fields
+        activity_spots: pd.DataFrame
 
     with pytest.raises(ValueError):
         create_image_analysis_results_input_model(InvalidImageResults)
@@ -168,7 +172,7 @@ def test_run_analysis_sequential_with_manual_input(monkeypatch):
     )
 
     def analyze(args):
-        df = args.image_analysis_results.activity_spots.data
+        df = args.image_analysis_results.activity_spots
         assert "Total Well" not in set(df["Entity"])
         return pd.Series({"total_value": int(df["Value"].sum())})
 
@@ -636,7 +640,9 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
         sample_names=samples_csv,
     )
 
-    expected_rows = len(pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV))
+    expected_rows = len(
+        pd.read_csv(IMAGE_ANALYSIS_RESULT_CSV).query("Entity == 'Activity Spots'")
+    )
     calls: list[list[tuple[str, str]]] = []
 
     def fake_run_stream(entrypoint_path, tar_buf, mode, on_image):
@@ -909,7 +915,7 @@ def test_run_analyze_seq_outputs_tar_with_multiple_targets_sequential(
         # 呼び出し順序を記録
         call_order.append((args.data_name, args.sample_name))
 
-        df = args.image_analysis_results.activity_spots.data
+        df = args.image_analysis_results.activity_spots
 
         # 画像を出力
         fig = plt.figure()
@@ -1011,7 +1017,7 @@ def test_run_analyze_seq_handles_target_failures_immediate(monkeypatch, capsys):
         if args.data_name == "0001":
             raise ValueError(f"Intentional failure for {args.data_name}")
 
-        df = args.image_analysis_results.activity_spots.data
+        df = args.image_analysis_results.activity_spots
 
         # 画像を出力
         fig = plt.figure()
@@ -1086,7 +1092,7 @@ def test_run_analyze_seq_with_print_statements_doesnt_corrupt_output(
     def analyze(args):
         # ユーザーコードにprint文が含まれているケース
         print(f"Debug: Analyzing {args.data_name}")
-        df = args.image_analysis_results.activity_spots.data
+        df = args.image_analysis_results.activity_spots
         print(f"Debug: Processing {len(df)} rows")
         total = int(df["Value"].sum())
         print(f"Debug: Total value is {total}")
@@ -1132,24 +1138,29 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
 
     def preprocess(args):
         calls["count"] += 1
-        df = args.image_analysis_results["activity_spots"]
-        return {"row_count": int(len(df)), "threshold": int(args.params.threshold)}
+        df = args.image_analysis_results.activity_spots
+        df["DoubleValue"] = df["Value"] * 2
+        return ProcessedInputs(
+            image_analysis_results=PreprocessedImageResultsDf(activity_spots=df),
+            extra={"row_count": int(len(df)), "threshold": int(args.params.threshold)},
+        )
 
     def analyze(args):
-        df = args.image_analysis_results.activity_spots.data
+        df = args.image_analysis_results.activity_spots
         return pd.Series(
             {
-                "total_value": int(df["Value"].sum()),
-                "row_count": args.preprocessed_data["row_count"],
+                "total_value": int(df["DoubleValue"].sum()),
+                "row_count": args.extra["row_count"],
             }
         )
 
     def postprocess(args):
         df = args.analysis_results.copy()
-        df["pre_threshold"] = args.preprocessed_data["threshold"]
+        df["pre_threshold"] = args.extra["threshold"]
         return df
 
     result_df = ctx.run_analysis_with_preprocess(
+        preprocessed_image_analysis_results=PreprocessedImageResultsDf,
         preprocess=preprocess,
         analyze=analyze,
         postprocess=postprocess,
@@ -1222,16 +1233,22 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
         stdout=stdout_buf,
     )
 
-    def preprocess(_):
-        return {"multiplier": 3}
+    def preprocess(args):
+        return ProcessedInputs(
+            image_analysis_results=PreprocessedImageResultsDf(
+                activity_spots=args.image_analysis_results.activity_spots
+            ),
+            extra={"multiplier": 3},
+        )
 
     def postprocess(args):
         df = args.analysis_results.copy()
-        df["scaled"] = df["total_value"] * args.preprocessed_data["multiplier"]
+        df["scaled"] = df["total_value"] * args.extra["multiplier"]
         return df
 
     with pytest.raises(SystemExit) as excinfo:
         ctx.run_analysis_with_preprocess(
+            preprocessed_image_analysis_results=PreprocessedImageResultsDf,
             preprocess=preprocess,
             analyze=lambda _: pd.Series({"unused": 0}),
             postprocess=postprocess,
@@ -1312,23 +1329,26 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
     def postprocess(args):
         df = args.analysis_results.copy()
         df["scaled"] = df.apply(
-            lambda row: (
-                row["total_value"]
-                * args.preprocessed_data["multipliers"][row["data"]]
-            ),
+            lambda row: row["total_value"] * args.extra["multipliers"][row["data"]],
             axis=1,
         )
         return df
 
     def preprocess(args):
         calls["count"] += 1
-        return {
-            "multipliers": {
-                data_name: 5 + i * 2 for i, data_name in enumerate(args.targets)
-            }
-        }
+        return ProcessedInputs(
+            image_analysis_results=PreprocessedImageResultsDf(
+                activity_spots=args.image_analysis_results.activity_spots
+            ),
+            extra={
+                "multipliers": {
+                    data_name: 5 + i * 2 for i, data_name in enumerate(args.targets)
+                }
+            },
+        )
 
     result_df = ctx.run_analysis_with_preprocess(
+        preprocessed_image_analysis_results=PreprocessedImageResultsDf,
         preprocess=preprocess,
         analyze=lambda _: pd.Series({"unused": 0}),
         postprocess=postprocess,
