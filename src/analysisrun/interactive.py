@@ -381,12 +381,12 @@ def _is_pydantic_model(v) -> TypeGuard[Type[BaseModel]]:
     )
 
 
-@custom_input()
+@custom_input(input_method="path")
 @deprecated("削除予定。VirtualFileを使用してください。")
 class FilePath(str):
     """
     ファイルパスを表す文字列型。バリデーションの際にファイルの存在を確認します。
-    文字列の前後にシングルクォートがある場合は削除します。
+    文字列の前後にクォーテーションがある場合は削除します。
     """
 
     @classmethod
@@ -408,11 +408,11 @@ class FilePath(str):
         return core_schema.no_info_plain_validator_function(validate)
 
 
-@custom_input()
+@custom_input(input_method="path")
 class DirectoryPath(str):
     """
     ディレクトリパスを表す文字列型。バリデーションの際にディレクトリの存在を確認します。
-    文字列の前後にシングルクォートがある場合は削除します。
+    文字列の前後にクォーテーションがある場合は削除します。
     """
 
     @classmethod
