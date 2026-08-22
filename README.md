@@ -56,6 +56,7 @@ def analyze(
 
     return pd.Series(
         {
+            "analyzed_at": ar.get_jst_timestamp(),
             "ok": ok,
             "area_mean": area_mean,
         }

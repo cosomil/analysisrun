@@ -1,8 +1,23 @@
 import unicodedata
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TypeGuard
 
 import pandas as pd
 from pandas._typing import FilePath, ReadCsvBuffer
+
+JST = timezone(timedelta(hours=9), "JST")
+
+
+def get_utc_timestamp() -> str:
+    """現在時刻をUTCのRFC3339形式で返す。"""
+
+    return datetime.now(UTC).isoformat()
+
+
+def get_jst_timestamp() -> str:
+    """現在時刻を日本標準時のRFC3339形式で返す。"""
+
+    return datetime.now(JST).isoformat()
 
 
 def read_dict(
