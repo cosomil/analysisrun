@@ -42,7 +42,7 @@ def preprocess(
 
     return ar.ProcessedInputs(
         image_analysis_results=PreprocessedImageAnalysisResults(activity_spots=df),
-        extra=Extra(target_count=int(len(df))),
+        extra=Extra(target_count=len(df)),
     )
 
 

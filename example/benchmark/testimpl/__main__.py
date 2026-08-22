@@ -1,7 +1,7 @@
 import hashlib
 import os
-from typing import NamedTuple, Optional
 from pathlib import Path
+from typing import NamedTuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -37,7 +37,7 @@ class BenchParameters(BaseModel):
     poly_degree: int = 512  # 多項モーメントの最高次数
     tau: int = 7  # 遅延座標
     plot_sample: int = 5_000  # 散布図の描画サンプル数/視野（多すぎると画像が重い）
-    corr_len: Optional[int] = (
+    corr_len: int | None = (
         None  # 相関行列用に使用する系列長（Noneならpoints_per_field）
     )
 
@@ -65,7 +65,7 @@ def _field_id(df_field: pd.DataFrame) -> int:
     v = df_field["MultiPointIndex"].iloc[0]
     try:
         return int(v)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return -1
 
 
@@ -169,15 +169,15 @@ def analyze(
 
     # 結果サマリ（ベンチ用のメタ情報）
     return pd.Series(
-        dict(
-            Lane=lane_name,
-            NumFields=len(field_ids),
-            PointsPerField=params.points_per_field,
-            PolyDegree=params.poly_degree,
-            Repeats=params.repeats,
-            Tau=params.tau,
-            Ok=True,
-        )
+        {
+            "Lane": lane_name,
+            "NumFields": len(field_ids),
+            "PointsPerField": params.points_per_field,
+            "PolyDegree": params.poly_degree,
+            "Repeats": params.repeats,
+            "Tau": params.tau,
+            "Ok": True,
+        }
     )
 
 

@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tarfile
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
@@ -14,14 +15,10 @@ from types import MappingProxyType
 from typing import (
     IO,
     Any,
-    Callable,
-    Iterable,
+    ClassVar,
     Literal,
     LiteralString,
-    Mapping,
-    Optional,
     Protocol,
-    Type,
 )
 
 import matplotlib.figure as fig
@@ -29,9 +26,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from analysisrun.env import get_entrypoint, get_interactivity
-from analysisrun.typing import NamedTupleLike, VirtualFileLike
 from analysisrun.cleansing import CleansedData, filter_by_entity
+from analysisrun.env import get_entrypoint, get_interactivity
 from analysisrun.helper import read_dict
 from analysisrun.interactive import VirtualFile, scan_model_input
 from analysisrun.pipeable_io import (
@@ -43,6 +39,7 @@ from analysisrun.pipeable_io import (
 )
 from analysisrun.scanner import Lanes, scan
 from analysisrun.tar import FileIO, create_tar_from_dict, read_tar_as_dict
+from analysisrun.typing import NamedTupleLike, VirtualFileLike
 
 
 class Output(Protocol):
@@ -90,13 +87,14 @@ class ManualInput[Params: BaseModel]:
     サンプル名CSVファイル（サンプル名とレーン番号の対応表）
     """
 
-    model_config = {
+    model_config: ClassVar[dict[str, bool]] = {
         "arbitrary_types_allowed": True,
     }
 
 
 CleansingFunc = Callable[[pd.DataFrame | CleansedData], CleansedData]
 NonEmptyCleansingPipeline = tuple[CleansingFunc, *tuple[CleansingFunc, ...]]
+CleansingPipeline = NonEmptyCleansingPipeline | list[CleansingFunc]
 _ImageResultsSerialization = Literal["csv", "pickle"]
 
 
@@ -112,14 +110,14 @@ class _ImageAnalysisResultSpec:
 
 def image_analysis_result_spec(
     description: str,
-    cleansing: CleansingFunc | NonEmptyCleansingPipeline,
+    cleansing: CleansingFunc | CleansingPipeline,
 ) -> Any:
     """
     画像解析結果フィールドの仕様を定義する。
 
     """
     normalized_cleansing = (
-        cleansing if isinstance(cleansing, tuple) else (cleansing,)
+        tuple(cleansing) if isinstance(cleansing, (tuple, list)) else (cleansing,)
     )
     if len(normalized_cleansing) == 0:
         raise ValueError("cleansing must contain at least one function")
@@ -140,10 +138,31 @@ def entity_filter(
     return lambda data: filter_by_entity(data, entity=entity)
 
 
+def dropna(column: str | Iterable[str]) -> CleansingFunc:
+    """
+    指定した列のいずれかに欠損値がある行を除去するクレンジング処理を返す。
+
+    Parameters
+    ----------
+    column
+        欠損値を確認する列名。複数指定も可能。
+    """
+
+    subset = (column,) if isinstance(column, str) else tuple(column)
+    if not subset:
+        raise ValueError("column must contain at least one column")
+
+    def _dropna(data: pd.DataFrame | CleansedData) -> CleansedData:
+        target_data = data if isinstance(data, pd.DataFrame) else data._data
+        return CleansedData(_data=target_data.dropna(subset=list(subset)))
+
+    return _dropna
+
+
 def _get_image_analysis_specs[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
-    image_analysis_results: Type[ImageAnalysisResults],
+    image_analysis_results: type[ImageAnalysisResults],
 ) -> dict[str, _ImageAnalysisResultSpec]:
     """
     ImageAnalysisResultsのデフォルト値に定義されたImageAnalysisResultSpecを取得する。
@@ -155,7 +174,7 @@ def _get_image_analysis_specs[
     for name in image_analysis_results._fields:  # type: ignore[attr-defined]
         spec = field_defaults.get(name)
         if not isinstance(spec, _ImageAnalysisResultSpec):
-            raise ValueError(
+            raise TypeError(
                 f"{image_analysis_results.__name__}.{name} must have ImageAnalysisResultSpec as default"
             )
         specs[name] = spec
@@ -167,8 +186,8 @@ def _build_streaming_input_schema[
     Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
-    params: Type[Params],
-    image_analysis_results: Type[ImageAnalysisResults],
+    params: type[Params],
+    image_analysis_results: type[ImageAnalysisResults],
 ) -> dict[str, Any]:
     specs = _get_image_analysis_specs(image_analysis_results)
     tar_entries: list[dict[str, Any]] = [
@@ -212,7 +231,7 @@ def _build_streaming_input_schema[
 
 def create_image_analysis_results_input_model[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
-](image_analysis_results: Type[ImageAnalysisResults]) -> Type[BaseModel]:
+](image_analysis_results: type[ImageAnalysisResults]) -> type[BaseModel]:
     """
     ImageAnalysisResults定義から動的にVirtualFile入力モデルを生成する。
 
@@ -432,7 +451,7 @@ class AnalysisContext[
     """
 
     params: Params
-    image_analysis_results: Type[ImageAnalysisResults]
+    image_analysis_results: type[ImageAnalysisResults]
     output: Output
     state: (
         _AnalyzeSeqState[Params, BaseModel]
@@ -463,7 +482,7 @@ class AnalysisContext[
     def run_analysis(
         self,
         analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
-        postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]] = None,
+        postprocess: Callable[[PostprocessArgs[Params]], pd.DataFrame] | None = None,
     ) -> pd.DataFrame:
         """
         read_contextで読み込んだコンテキストに基づいて数値解析を実行する。
@@ -493,7 +512,7 @@ class AnalysisContext[
                     return self._run_parallel_streaming(postprocess, stdout, stderr)
         except SystemExit:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
                 "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
@@ -507,7 +526,7 @@ class AnalysisContext[
         Extra,
     ](
         self,
-        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
+        preprocessed_image_analysis_results: type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
             [PreprocessArgs[Params, ImageAnalysisResults]],
             ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
@@ -522,12 +541,7 @@ class AnalysisContext[
             ],
             pd.Series,
         ],
-        postprocess: Optional[
-            Callable[
-                [PostprocessArgsWithPreprocess[Params, Extra]],
-                pd.DataFrame,
-            ]
-        ] = None,
+        postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None = None,
     ) -> pd.DataFrame:
         """
         read_contextで読み込んだコンテキストに基づいて、preprocess -> analyze -> postprocess の順で数値解析を実行する。
@@ -578,7 +592,7 @@ class AnalysisContext[
                     )
         except SystemExit:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             exit_with_error(
                 ExitCodes.PROCESSING_ERROR,
                 "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
@@ -650,7 +664,7 @@ class AnalysisContext[
                             )
                         )
                     _ensure_result_annotations(series, data_name, sample_name)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     exit_with_error_streaming(
                         ExitCodes.PROCESSING_ERROR,
                         f"ターゲット {data_name} ({sample_name}) の解析処理中にエラーが発生しました。",
@@ -678,7 +692,7 @@ class AnalysisContext[
         Extra,
     ](
         self,
-        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
+        preprocessed_image_analysis_results: type[PreprocessedImageAnalysisResults],
         analyze: Callable[
             [
                 AnalyzeArgsWithPreprocess[
@@ -733,7 +747,7 @@ class AnalysisContext[
                             )
                         )
                     _ensure_result_annotations(series, data_name, sample_name)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     exit_with_error_streaming(
                         ExitCodes.PROCESSING_ERROR,
                         f"ターゲット {data_name} ({sample_name}) の解析処理中にエラーが発生しました。",
@@ -757,7 +771,7 @@ class AnalysisContext[
     def _run_sequential(
         self,
         analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
-        postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
+        postprocess: Callable[[PostprocessArgs[Params]], pd.DataFrame] | None,
     ) -> pd.DataFrame:
         assert isinstance(self.state, _SequentialState)
         state = self.state
@@ -797,7 +811,7 @@ class AnalysisContext[
         Extra,
     ](
         self,
-        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
+        preprocessed_image_analysis_results: type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
             [PreprocessArgs[Params, ImageAnalysisResults]],
             ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
@@ -812,12 +826,11 @@ class AnalysisContext[
             ],
             pd.Series,
         ],
-        postprocess: Optional[
-            Callable[
-                [PostprocessArgsWithPreprocess[Params, Extra]],
-                pd.DataFrame,
-            ]
-        ],
+        postprocess: Callable[
+            [PostprocessArgsWithPreprocess[Params, Extra]],
+            pd.DataFrame,
+        ]
+        | None,
     ) -> pd.DataFrame:
         assert isinstance(self.state, _SequentialState)
         state = self.state
@@ -873,7 +886,7 @@ class AnalysisContext[
 
     def _run_parallel(
         self,
-        postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
+        postprocess: Callable[[PostprocessArgs[Params]], pd.DataFrame] | None,
     ) -> pd.DataFrame:
         assert isinstance(self.state, _ParallelState)
         state = self.state
@@ -885,7 +898,7 @@ class AnalysisContext[
             _data_name: str,
             image_name: str,
             image_bytes: bytes,
-            _image_type: Optional[str],
+            _image_type: str | None,
         ) -> None:
             # parallel-entrypoint では従来仕様どおりファイル名のみで保存する
             with image_write_lock:
@@ -917,17 +930,12 @@ class AnalysisContext[
         Extra,
     ](
         self,
-        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
+        preprocessed_image_analysis_results: type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
             [PreprocessArgs[Params, ImageAnalysisResults]],
             ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
-        postprocess: Optional[
-            Callable[
-                [PostprocessArgsWithPreprocess[Params, Extra]],
-                pd.DataFrame,
-            ]
-        ],
+        postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None,
     ) -> pd.DataFrame:
         assert isinstance(self.state, _ParallelState)
         state = self.state
@@ -939,7 +947,7 @@ class AnalysisContext[
             _data_name: str,
             image_name: str,
             image_bytes: bytes,
-            _image_type: Optional[str],
+            _image_type: str | None,
         ) -> None:
             # parallel-entrypoint では従来仕様どおりファイル名のみで保存する
             with image_write_lock:
@@ -985,7 +993,7 @@ class AnalysisContext[
 
     def _run_parallel_streaming(
         self,
-        postprocess: Optional[Callable[[PostprocessArgs[Params]], pd.DataFrame]],
+        postprocess: Callable[[PostprocessArgs[Params]], pd.DataFrame] | None,
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
@@ -998,7 +1006,7 @@ class AnalysisContext[
                 data_name: str,
                 image_name: str,
                 image_bytes: bytes,
-                image_type: Optional[str],
+                image_type: str | None,
             ) -> None:
                 with tar_lock:
                     _add_tar_binary_entry(
@@ -1042,7 +1050,7 @@ class AnalysisContext[
                 _write_parallel_streaming_result_entries(tar, result_df)
             except SystemExit:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 exit_with_error_streaming(
                     ExitCodes.PROCESSING_ERROR,
                     "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
@@ -1059,17 +1067,12 @@ class AnalysisContext[
         Extra,
     ](
         self,
-        preprocessed_image_analysis_results: Type[PreprocessedImageAnalysisResults],
+        preprocessed_image_analysis_results: type[PreprocessedImageAnalysisResults],
         preprocess: Callable[
             [PreprocessArgs[Params, ImageAnalysisResults]],
             ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
-        postprocess: Optional[
-            Callable[
-                [PostprocessArgsWithPreprocess[Params, Extra]],
-                pd.DataFrame,
-            ]
-        ],
+        postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None,
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
@@ -1082,7 +1085,7 @@ class AnalysisContext[
                 data_name: str,
                 image_name: str,
                 image_bytes: bytes,
-                image_type: Optional[str],
+                image_type: str | None,
             ) -> None:
                 with tar_lock:
                     _add_tar_binary_entry(
@@ -1145,7 +1148,7 @@ class AnalysisContext[
                 _write_parallel_streaming_result_entries(tar, result_df)
             except SystemExit:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 exit_with_error_streaming(
                     ExitCodes.PROCESSING_ERROR,
                     "解析処理中に不明なエラーが発生しました。開発者に確認してください。",
@@ -1164,7 +1167,7 @@ class AnalysisContext[
         entrypoint: Path,
         preprocessed_data: Any | None,
         include_preprocessed_data: bool,
-        on_image: Callable[[str, str, bytes, Optional[str]], None],
+        on_image: Callable[[str, str, bytes, str | None], None],
     ) -> tuple[pd.DataFrame, list[tuple[str, str, str, str]]]:
         if not sample_pairs:
             return pd.DataFrame(), []
@@ -1176,7 +1179,7 @@ class AnalysisContext[
 
         def _run_chunk(
             targets: list[tuple[str, str]],
-        ) -> tuple[list[pd.Series], Optional[tuple[str, str, str, str]]]:
+        ) -> tuple[list[pd.Series], tuple[str, str, str, str] | None]:
             tar_buf = _build_analyze_seq_tar_buffer(
                 params_payload,
                 targets,
@@ -1255,7 +1258,7 @@ class AnalysisContext[
         preprocessed_data: Any | None = None,
         include_preprocessed_data: bool = False,
         output_dir: Path | None = None,
-        on_image: Optional[Callable[[str, str, bytes, Optional[str]], None]] = None,
+        on_image: Callable[[str, str, bytes, str | None], None] | None = None,
     ) -> tuple[pd.DataFrame, dict[str, dict[str, BytesIO]]]:
         if not sample_pairs:
             return pd.DataFrame(), {}
@@ -1270,7 +1273,7 @@ class AnalysisContext[
         ) -> tuple[
             list[pd.Series],
             dict[str, dict[str, BytesIO]],
-            Optional[tuple[str, str, str, str]],
+            tuple[str, str, str, str] | None,
         ]:
             tar_buf = _build_analyze_seq_tar_buffer(
                 params_payload,
@@ -1456,12 +1459,12 @@ def read_context[
     Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
-    params: Type[Params],
-    image_analysis_results: Type[ImageAnalysisResults],
-    manual_input: Optional[ManualInput[Params]] = None,
-    stdin: Optional[IO[bytes]] = None,
-    stdout: Optional[IO[bytes]] = None,
-    output_dir: Optional[str | Path] = None,
+    params: type[Params],
+    image_analysis_results: type[ImageAnalysisResults],
+    manual_input: ManualInput[Params] | None = None,
+    stdin: IO[bytes] | None = None,
+    stdout: IO[bytes] | None = None,
+    output_dir: str | Path | None = None,
 ) -> AnalysisContext[Params, ImageAnalysisResults]:
     """
     引数、環境変数、標準入力を読み取り、実行モードに応じたAnalysisContextを構築する。
@@ -1490,7 +1493,7 @@ def read_context[
         image_analysis_results_input_model = create_image_analysis_results_input_model(
             image_analysis_results
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         exit_with_error(
             ExitCodes.INVALID_USAGE,
             "ImageAnalysisResultsの定義が不正です。各フィールドにimage_analysis_result_spec(...)を設定してください。",
@@ -1513,7 +1516,7 @@ def read_context[
                 params, image_analysis_results_input_model
             ]
             parsed = AnalyzeSeqInput(**tar_dict)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
                 "入力データの読み込みに失敗しました。入力形式を確認してください。",
@@ -1554,7 +1557,7 @@ def read_context[
             tar_dict = read_tar_as_dict(_stdin)
             tar_dict["params"] = _maybe_load_json(tar_dict.get("params"))
             runtime_input = RuntimeInputModel(**tar_dict)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             exit_with_error(
                 ExitCodes.INVALID_USAGE,
                 "入力データの読み込みに失敗しました。入力形式を確認してください。",
@@ -1767,7 +1770,7 @@ def _build_preprocess_args[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
     params: Params,
-    image_analysis_results_type: Type[ImageAnalysisResults],
+    image_analysis_results_type: type[ImageAnalysisResults],
     cleansed_lanes: Mapping[str, Lanes],
     targets: dict[str, str],
 ) -> PreprocessArgs[Params, ImageAnalysisResults]:
@@ -1789,7 +1792,7 @@ def _copy_params[Params: BaseModel](params: Params) -> Params:
 def _build_dataframe_namedtuple[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
-    image_analysis_results_type: Type[ImageAnalysisResults],
+    image_analysis_results_type: type[ImageAnalysisResults],
     values: Mapping[str, pd.DataFrame],
 ) -> ImageAnalysisResults:
     expected_fields = image_analysis_results_type._fields  # type: ignore[attr-defined]
@@ -1865,7 +1868,7 @@ def _build_lanes_by_result_name(
 def _build_lane_dataframe_namedtuple[
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ](
-    image_analysis_results_type: Type[ImageAnalysisResults],
+    image_analysis_results_type: type[ImageAnalysisResults],
     lanes_by_name: Mapping[str, Lanes],
     data_name: str,
 ) -> ImageAnalysisResults:
@@ -1913,12 +1916,12 @@ def _deserialize_dataframe_pickle(value: Any) -> pd.DataFrame:
         else:
             loaded = pd.read_pickle(value)
     except Exception as exc:
-        raise RuntimeError(
+        raise TypeError(
             "画像解析結果データの読み込みに失敗しました。DataFrameのpickleデータを指定してください。"
         ) from exc
 
     if not isinstance(loaded, pd.DataFrame):
-        raise RuntimeError(
+        raise TypeError(
             "画像解析結果データはDataFrameのpickleデータを指定してください。"
         )
     return loaded
@@ -2102,9 +2105,9 @@ def _run_entrypoint_with_tar(
     return subprocess.run(
         [sys.executable, str(entrypoint)],
         input=tar_buf.getvalue(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         env=env,
+        check=False,
     )
 
 
@@ -2113,7 +2116,7 @@ class _AnalyzeSeqStreamingResult:
     returncode: int
     stderr: str
     analysis_results: dict[str, BytesIO]
-    error: Optional[str]
+    error: str | None
     tar_read_ok: bool
 
 
@@ -2121,7 +2124,7 @@ def _run_entrypoint_with_tar_streaming(
     entrypoint: Path,
     tar_buf: BytesIO,
     mode: str,
-    on_image: Callable[[str, str, bytes, Optional[str]], None],
+    on_image: Callable[[str, str, bytes, str | None], None],
 ) -> _AnalyzeSeqStreamingResult:
     env = os.environ.copy()
     env["ANALYSISRUN_MODE"] = mode
@@ -2154,7 +2157,7 @@ def _run_entrypoint_with_tar_streaming(
             proc.stdin.close()
 
     analysis_results: dict[str, BytesIO] = {}
-    error_message: Optional[str] = None
+    error_message: str | None = None
     tar_read_ok = True
 
     if proc.stdout is not None:
@@ -2179,7 +2182,7 @@ def _run_entrypoint_with_tar_streaming(
                         image_name = "/".join(parts[2:])
                         image_type = member.pax_headers.get("image_type")
                         on_image(parts[0], image_name, content, image_type)
-        except Exception:
+        except Exception:  # noqa: BLE001
             tar_read_ok = False
         finally:
             proc.stdout.close()
@@ -2200,7 +2203,7 @@ def _run_entrypoint_with_tar_streaming(
 def _try_read_tar_from_bytes(data: bytes) -> dict[str, Any] | None:
     try:
         return read_tar_as_dict(BytesIO(data))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -2209,7 +2212,7 @@ def _add_tar_binary_entry(
     name: str,
     content: bytes,
     *,
-    image_type: Optional[str] = None,
+    image_type: str | None = None,
 ) -> None:
     tar_info = tarfile.TarInfo(name=name)
     tar_info.size = len(content)
@@ -2230,9 +2233,9 @@ def _write_parallel_streaming_result_entries(
     _add_tar_binary_entry(tar, "result_csv", csv_buf.getvalue())
 
     for idx, row in result_df.iterrows():
-        data_name = row["data"] if "data" in row else idx
+        data_name = row.get("data", idx)
         json_bytes = row.to_json().encode("utf-8")
-        _add_tar_binary_entry(tar, f"{str(data_name)}/result_json", json_bytes)
+        _add_tar_binary_entry(tar, f"{data_name!s}/result_json", json_bytes)
 
 
 def _write_parallel_chunk_errors(
@@ -2243,8 +2246,6 @@ def _write_parallel_chunk_errors(
         header = f"\033[1;31m=====> * {data_name} ({sample_name}) ====================>\033[0m"
         footer = f"\033[1;31m<==================== {data_name} ({sample_name}) * <=====\033[0m"
         stderr.write(
-            "\n".join(
-                [header, err_msg.strip(), "", err_out.strip(), footer, "", ""]
-            ).encode("utf-8")
+            f"{header}\n{err_msg.strip()}\n\n{err_out.strip()}\n{footer}\n\n".encode()
         )
     stderr.flush()

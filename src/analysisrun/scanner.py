@@ -1,4 +1,3 @@
-from typing import List, Optional
 
 import pandas as pd
 
@@ -9,7 +8,7 @@ def _raise_missing_columns(context: str, missing_columns: set[str]) -> None:
     raise ValueError(f"{context}: missing {sorted(missing_columns)}")
 
 
-def _default_field_numbers(field_numbers: Optional[List[int]]) -> List[int]:
+def _default_field_numbers(field_numbers: list[int] | None) -> list[int]:
     return field_numbers or [i + 1 for i in range(12)]
 
 
@@ -38,10 +37,12 @@ def _normalize_lane_source_data(data: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _build_fields(name: str, data: pd.DataFrame, field_numbers: List[int]) -> "Fields":
+def _build_fields(name: str, data: pd.DataFrame, field_numbers: list[int]) -> "Fields":
     missing_columns = {"MultiPointIndex"} - set(data.columns)
     if missing_columns:
-        _raise_missing_columns("Fields requires MultiPointIndex column", missing_columns)
+        _raise_missing_columns(
+            "Fields requires MultiPointIndex column", missing_columns
+        )
 
     if data.empty:
         image_analysis_method = ""
@@ -72,7 +73,7 @@ class Fields:
         name: str,
         image_analysis_method: str,
         data: pd.DataFrame,
-        field_numbers: List[int],
+        field_numbers: list[int],
         skip_empty_fields: bool = False,
     ) -> None:
         """
@@ -103,7 +104,6 @@ class Fields:
         self.data = data
         self.field_numbers = field_numbers
         self.__skip_empty_fields = skip_empty_fields
-        return
 
     def skip_empty_fields(self):
         """
@@ -150,8 +150,8 @@ class Lanes:
     def __init__(
         self,
         whole_data: CleansedData,
-        target_data: List[str],
-        field_numbers: List[int],
+        target_data: list[str],
+        field_numbers: list[int],
     ) -> None:
         """
         データ全体をレーンごとにスキャンする。
@@ -177,7 +177,6 @@ class Lanes:
             for name, lane_data in self.whole_data.groupby("Data", sort=False)
             if name in self._target_data_set
         }
-        return
 
     def get(self, data_name: str) -> Fields:
         if data_name not in self._target_data_set:
@@ -192,8 +191,8 @@ class Lanes:
 
 def scan(
     whole_data: pd.DataFrame,
-    target_data: List[str],
-    field_numbers: Optional[List[int]] = None,
+    target_data: list[str],
+    field_numbers: list[int] | None = None,
 ) -> Lanes:
     """
     データ全体をレーンごとにスキャンする。
@@ -244,7 +243,7 @@ def scan(
 def scan_fields(
     data: pd.DataFrame,
     data_name: str,
-    field_numbers: Optional[List[int]] = None,
+    field_numbers: list[int] | None = None,
 ) -> Fields:
     """
     正規化済みDataFrameから単一レーンのFieldsを復元する。

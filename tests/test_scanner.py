@@ -2,9 +2,9 @@
 scanner.pyのテストコード
 """
 
-import analysisrun
 import pandas as pd
 
+import analysisrun
 from analysisrun.cleansing import CleansedData
 from analysisrun.scanner import Fields, Lanes, scan_fields
 
@@ -479,7 +479,10 @@ def test_lanes_get_requires_non_empty_image_analysis_method():
 def test_lanes_with_empty_dataframe_sets_columns():
     """空のDataFrameの場合にImageAnalysisMethod/Data列が空文字列で用意される"""
     test_data = pd.DataFrame(
-        {"Filename": pd.Series(dtype="object"), "MultiPointIndex": pd.Series(dtype="int")}
+        {
+            "Filename": pd.Series(dtype="object"),
+            "MultiPointIndex": pd.Series(dtype="int"),
+        }
     )
     cleansed_data = CleansedData(_data=test_data)
 

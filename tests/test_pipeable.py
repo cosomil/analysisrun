@@ -21,6 +21,7 @@ from analysisrun.pipeable import (
     ManualInput,
     ProcessedInputs,
     create_image_analysis_results_input_model,
+    dropna,
     entity_filter,
     image_analysis_result_spec,
     read_context,
@@ -76,8 +77,7 @@ def _dump_pickle_obj(value) -> BytesIO:
 def _force_interactivity(monkeypatch, value: str | None) -> None:
     """read_context と exit_with_error の両方で同じ interactivity を返すように固定する。"""
 
-    import analysisrun.pipeable as pipeable
-    import analysisrun.pipeable_io as pipeable_io
+    from analysisrun import pipeable, pipeable_io
 
     monkeypatch.setattr(pipeable, "get_interactivity", lambda: value)
     monkeypatch.setattr(pipeable_io, "get_interactivity", lambda: value)
@@ -109,8 +109,73 @@ def test_create_image_analysis_results_input_model_requires_spec():
     class InvalidImageResults(NamedTuple):
         activity_spots: pd.DataFrame
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         create_image_analysis_results_input_model(InvalidImageResults)
+
+
+def test_dropna_removes_rows_with_missing_values_in_specified_columns():
+    data = pd.DataFrame(
+        {
+            "foo_Sum": [1.0, None, 3.0, 4.0],
+            "bar_Sum": [1.0, 2.0, None, 4.0],
+            "unrelated": [None, "value", "value", None],
+        }
+    )
+
+    result = dropna(["foo_Sum", "bar_Sum"])(data)
+
+    assert list(result._data.index) == [0, 3]
+
+
+def test_dropna_accepts_single_column_name():
+    data = pd.DataFrame(
+        {
+            "foo_Sum": [1.0, None, 3.0],
+            "bar_Sum": [None, 2.0, 3.0],
+        }
+    )
+
+    result = dropna("foo_Sum")(data)
+
+    assert list(result._data.index) == [0, 2]
+
+
+def test_dropna_can_follow_another_cleansing_function():
+    data = pd.DataFrame(
+        {
+            "Entity": ["Activity Spots", "Nuclei", "Activity Spots"],
+            "foo_Sum": [1.0, None, None],
+        }
+    )
+
+    filtered = entity_filter("Activity Spots")(data)
+    result = dropna(["foo_Sum"])(filtered)
+
+    assert list(result._data.index) == [0]
+
+
+def test_dropna_requires_at_least_one_column():
+    with pytest.raises(ValueError, match="column must contain at least one column"):
+        dropna([])
+
+
+def test_image_analysis_result_spec_accepts_cleansing_list():
+    spec = image_analysis_result_spec(
+        description="Activity spots",
+        cleansing=[entity_filter("Activity Spots"), dropna(["Value"])],
+    )
+
+    data = pd.DataFrame(
+        {
+            "Entity": ["Activity Spots", "Activity Spots", "Nuclei"],
+            "Value": [1.0, None, 3.0],
+        }
+    )
+    result = data
+    for cleansing in spec.cleansing:
+        result = cleansing(result)
+
+    assert list(result._data.index) == [0]
 
 
 def test_read_context_showschema_outputs_streaming_input_schema(monkeypatch):
@@ -205,7 +270,7 @@ def test_parallel_entrypoint_streaming_outputs_tar(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -280,7 +345,7 @@ def test_parallel_entrypoint_streaming_postprocess_print_goes_to_stderr(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -355,7 +420,7 @@ def test_parallel_entrypoint_streaming_writes_images_before_result_entries(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -425,7 +490,7 @@ def test_parallel_entrypoint_streaming_preserves_leading_zero_values(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -547,7 +612,7 @@ def test_parallel_entrypoint_invokes_subprocess_and_saves_image(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -617,7 +682,7 @@ def test_parallel_entrypoint_assigns_targets_evenly_in_order_with_core_limit(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -725,7 +790,7 @@ def test_parallel_entrypoint_error_tar_even_when_returncode_zero(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     stderr_buf = BytesIO()
 
@@ -794,7 +859,7 @@ def test_parallel_entrypoint_error_tar_outputs_lane_message_and_saves_images(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     stderr_buf = BytesIO()
 
@@ -1142,7 +1207,7 @@ def test_run_analysis_with_preprocess_sequential_with_manual_input(monkeypatch):
         df["DoubleValue"] = df["Value"] * 2
         return ProcessedInputs(
             image_analysis_results=PreprocessedImageResultsDf(activity_spots=df),
-            extra={"row_count": int(len(df)), "threshold": int(args.params.threshold)},
+            extra={"row_count": len(df), "threshold": int(args.params.threshold)},
         )
 
     def analyze(args):
@@ -1179,7 +1244,7 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_streaming_outputs_tar(
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")
@@ -1267,7 +1332,7 @@ def test_run_analysis_with_preprocess_parallel_entrypoint_collects_preprocessed_
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, "terminal")
 
-    import analysisrun.pipeable as pipeable
+    from analysisrun import pipeable
 
     entrypoint = tmp_path / "entry.py"
     entrypoint.write_text("# dummy\n")

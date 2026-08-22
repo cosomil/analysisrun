@@ -23,4 +23,5 @@ dev = [
     "pandas-stubs>=2.2.3.250308",
     "pixelmatch>=0.3.0",
     "pytest>=8.4.0",
+    "ruff>=0.16.3",
 ]

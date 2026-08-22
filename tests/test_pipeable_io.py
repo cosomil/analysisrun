@@ -1,5 +1,5 @@
-from io import BytesIO
 import sys
+from io import BytesIO
 
 from analysisrun.pipeable_io import redirect_stdout_to_stderr
 

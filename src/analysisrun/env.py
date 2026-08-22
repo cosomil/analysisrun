@@ -17,11 +17,10 @@ def is_notebook_env() -> bool:
     except NameError:
         return False
 
-    if env_name == "TerminalInteractiveShell":
-        # IPython shell
-        return False
-    # Jupyter Notebook (env_name == 'ZMQInteractiveShell')
-    return True
+    # IPython shell ではなく、Jupyter Notebook の場合に True
+    # IPython shell: env_name == "TerminalInteractiveShell"
+    # Jupyter Notebook: env_name == "ZMQInteractiveShell"
+    return env_name != "TerminalInteractiveShell"
 
 
 def get_interactivity():

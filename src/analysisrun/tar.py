@@ -1,6 +1,6 @@
 import tarfile
 from io import BytesIO
-from typing import Any, IO, Optional
+from typing import IO, Any
 
 
 class FileIO(BytesIO):
@@ -60,12 +60,11 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
 
                     # ターゲットとなる辞書に値を設定
                     last_key = keys[-1]
-                    if last_key in current:
-                        if isinstance(current[last_key], dict):
-                            existing_path = "/".join(keys)
-                            raise ValueError(
-                                f"tar mapping error: {member.name} requires {existing_path} to be a value, but {existing_path} is a dictionary"
-                            )
+                    if last_key in current and isinstance(current[last_key], dict):
+                        existing_path = "/".join(keys)
+                        raise ValueError(
+                            f"tar mapping error: {member.name} requires {existing_path} to be a value, but {existing_path} is a dictionary"
+                        )
 
                     # 既に同じキーが存在する場合は上書き（警告なし）
                     current[last_key] = value
@@ -73,7 +72,7 @@ def read_tar_as_dict(b: IO[bytes]) -> dict[str, Any]:
     return result
 
 
-def _encode_to_tar(tar: tarfile.TarFile, prefix: Optional[str], data: dict[str, Any]):
+def _encode_to_tar(tar: tarfile.TarFile, prefix: str | None, data: dict[str, Any]):
     for name, value in data.items():
         if value is None:
             continue

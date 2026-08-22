@@ -5,8 +5,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from pixelmatch.contrib.PIL import pixelmatch
 from PIL import Image
+from pixelmatch.contrib.PIL import pixelmatch
 
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 SCRIPT = REPO_ROOT / "example" / "benchmark" / "testimpl"
@@ -71,7 +71,7 @@ def _run_one(*, mode: str) -> float:
 
         cmd = ["uv", "run", SCRIPT]
         t0 = time.perf_counter()
-        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
+        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, check=False)
         t1 = time.perf_counter()
 
         if proc.returncode != 0:
