@@ -2,9 +2,10 @@ import io
 import sys
 import tarfile
 import traceback
+from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import Enum
-from typing import IO, Iterator, NoReturn, Optional
+from typing import IO, NoReturn
 
 from pydantic import BaseModel, Field
 
@@ -99,7 +100,7 @@ def exit_with_error(
     message: str,
     stdout: IO[bytes],
     stderr: IO[bytes],
-    exception: Optional[Exception] = None,
+    exception: Exception | None = None,
 ) -> NoReturn:
     """
     解析の異常終了を行う。
@@ -147,7 +148,7 @@ def exit_with_error_streaming(
     message: str,
     tar: tarfile.TarFile,
     stderr: IO[bytes],
-    exception: Optional[Exception] = None,
+    exception: Exception | None = None,
 ) -> NoReturn:
     """
     ストリーミングTAR用のエラー終了処理。
@@ -200,7 +201,7 @@ class AnalysisInputModel[
     data_name: str = Field(description="解析対象のデータ名")
     sample_name: str = Field(description="解析対象のサンプル名")
     params: Params = Field(description="解析全体に関わるパラメータ")
-    preprocessed_data: Optional[VirtualFile] = Field(
+    preprocessed_data: VirtualFile | None = Field(
         default=None,
         description="前処理済みデータ（任意）",
     )
@@ -239,7 +240,7 @@ class AnalyzeSeqInputModel[
         description="解析対象データ情報。keyはdata_name、valueはsample_name"
     )
     params: Params = Field(description="解析全体に関わるパラメータ")
-    preprocessed_data: Optional[VirtualFile] = Field(
+    preprocessed_data: VirtualFile | None = Field(
         default=None,
         description="前処理済みデータ（任意）",
     )
@@ -262,7 +263,7 @@ class PostprocessInputModel[
     """
 
     analysis_results: dict[str, VirtualFile] = Field(description="解析結果データセット")
-    preprocessed_data: Optional[VirtualFile] = Field(
+    preprocessed_data: VirtualFile | None = Field(
         default=None,
         description="前処理済みデータ（任意）",
     )

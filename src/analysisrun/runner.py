@@ -1,12 +1,8 @@
+from collections.abc import Callable, Generator, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import (
-    Callable,
-    Generator,
-    Generic,
-    Iterable,
     LiteralString,
-    Optional,
     Protocol,
     TypeVar,
 )
@@ -63,7 +59,7 @@ class DefaultOutput:
 
 
 @dataclass
-class AnalyzeArgs(Generic[Context]):
+class AnalyzeArgs[Context]:
     ctx: Context
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト
@@ -83,7 +79,7 @@ class AnalyzeArgs(Generic[Context]):
 
 
 @dataclass
-class PostprocessArgs(Generic[Context]):
+class PostprocessArgs[Context]:
     ctx: Context
     """
     解析全体に関わる情報を格納するコンテキストオブジェクト。
@@ -94,7 +90,7 @@ class PostprocessArgs(Generic[Context]):
     """
 
 
-class NotebookRunner(Generic[Context]):
+class NotebookRunner[Context]:
     """
     主にJupyter notebookでの使用を想定したrunner。
     """
@@ -102,9 +98,7 @@ class NotebookRunner(Generic[Context]):
     def __init__(
         self,
         analyze: Callable[[AnalyzeArgs[Context]], pd.Series],
-        postprocess: Optional[
-            Callable[[PostprocessArgs[Context]], pd.DataFrame]
-        ] = None,
+        postprocess: Callable[[PostprocessArgs[Context]], pd.DataFrame] | None = None,
     ):
         """
         主にJupyter notebookでの使用を想定したrunner。
@@ -129,9 +123,9 @@ class NotebookRunner(Generic[Context]):
         ctx: Context,
         target_data: list[str],
         whole_data: CleansedData,
-        data_for_enhancement: list[CleansedData] = [],
-        field_numbers: Optional[list[int]] = None,
-        output: Optional[Output] = None,
+        data_for_enhancement: list[CleansedData] | None = None,
+        field_numbers: list[int] | None = None,
+        output: Output | None = None,
     ) -> pd.DataFrame:
         """
         各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
@@ -152,6 +146,8 @@ class NotebookRunner(Generic[Context]):
             画像を保存するためのOutput実装
         """
 
+        if data_for_enhancement is None:
+            data_for_enhancement = []
         results = pd.DataFrame(
             [
                 self._analyze(args)
@@ -169,7 +165,7 @@ class NotebookRunner(Generic[Context]):
         return _apply_postprocess(ctx, results, self._postprocess)
 
 
-class ParallelRunner(Generic[Context]):
+class ParallelRunner[Context]:
     """
     マルチプロセスで並列処理するrunner。
     """
@@ -177,9 +173,7 @@ class ParallelRunner(Generic[Context]):
     def __init__(
         self,
         analyze: Callable[[AnalyzeArgs[Context]], pd.Series],
-        postprocess: Optional[
-            Callable[[PostprocessArgs[Context]], pd.DataFrame]
-        ] = None,
+        postprocess: Callable[[PostprocessArgs[Context]], pd.DataFrame] | None = None,
     ):
         """
         マルチプロセスで並列処理するrunner。
@@ -204,9 +198,9 @@ class ParallelRunner(Generic[Context]):
         ctx: Context,
         target_data: list[str],
         whole_data: CleansedData,
-        data_for_enhancement: list[CleansedData] = [],
-        field_numbers: Optional[list[int]] = None,
-        output: Optional[Output] = None,
+        data_for_enhancement: list[CleansedData] | None = None,
+        field_numbers: list[int] | None = None,
+        output: Output | None = None,
     ) -> pd.DataFrame:
         """
         各レーンごとに数値解析を実行し、解析結果を結合したDataFrameを返す
@@ -227,6 +221,8 @@ class ParallelRunner(Generic[Context]):
             画像を保存するためのOutput実装
         """
 
+        if data_for_enhancement is None:
+            data_for_enhancement = []
         with ProcessPoolExecutor() as executor:
             results = pd.DataFrame(
                 executor.map(
@@ -245,18 +241,20 @@ class ParallelRunner(Generic[Context]):
         return _apply_postprocess(ctx, results, self._postprocess)
 
 
-def _analysis_args_generator(
+def _analysis_args_generator[Context](
     ctx: Context,
     target_data: list[str],
     whole_data: CleansedData,
-    data_for_enhancement: list[CleansedData] = [],
-    field_numbers: Optional[list[int]] = None,
-    output: Optional[Output] = None,
+    data_for_enhancement: list[CleansedData] | None = None,
+    field_numbers: list[int] | None = None,
+    output: Output | None = None,
 ) -> Generator[AnalyzeArgs[Context]]:
     """
     各レーンごとの解析に使用する引数を生成するジェネレータ
     """
 
+    if data_for_enhancement is None:
+        data_for_enhancement = []
     field_numbers = field_numbers or [i + 1 for i in range(12)]
 
     lanes = Lanes(
@@ -282,10 +280,10 @@ def _analysis_args_generator(
         )
 
 
-def _apply_postprocess(
+def _apply_postprocess[Context](
     ctx: Context,
     results: pd.DataFrame,
-    postprocess: Optional[Callable[[PostprocessArgs[Context]], pd.DataFrame]],
+    postprocess: Callable[[PostprocessArgs[Context]], pd.DataFrame] | None,
 ) -> pd.DataFrame:
     """
     解析結果の後処理を適用する

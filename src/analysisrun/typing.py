@@ -1,11 +1,10 @@
+from collections.abc import Iterator
 from pathlib import Path
 from typing import (
     Any,
     BinaryIO,
-    Iterator,
     Protocol,
     SupportsIndex,
-    Tuple,
     overload,
     runtime_checkable,
 )
@@ -13,7 +12,7 @@ from typing import (
 
 @runtime_checkable
 class NamedTupleLike[E](Protocol):
-    _fields: Tuple[str, ...]
+    _fields: tuple[str, ...]
     _field_defaults: dict[str, Any]
 
     def __init__(self, *args): ...

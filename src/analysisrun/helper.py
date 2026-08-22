@@ -1,5 +1,5 @@
-from typing import Dict, TypeGuard
 import unicodedata
+from typing import TypeGuard
 
 import pandas as pd
 from pandas._typing import FilePath, ReadCsvBuffer
@@ -9,7 +9,7 @@ def read_dict(
     filepath_or_buffer: FilePath | ReadCsvBuffer[str] | ReadCsvBuffer[bytes],
     key: str,
     value: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     CSVファイルを読み込み、指定したカラムをキーと値にして辞書を作成する。
 

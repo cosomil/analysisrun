@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Callable
 from dataclasses import is_dataclass
 from io import BytesIO
 from os import getcwd
@@ -6,10 +7,7 @@ from pathlib import Path
 from typing import (
     Annotated,
     Any,
-    Callable,
     Literal,
-    Optional,
-    Type,
     TypeGuard,
     TypeVar,
     get_origin,
@@ -56,7 +54,7 @@ def _format_validation_error(e: ValidationError, field_name: str) -> str:
 
 
 def _validate_and_store_field_value(
-    model_class: Type[BaseModel], draft_model: BaseModel, field_name: str, value: Any
+    model_class: type[BaseModel], draft_model: BaseModel, field_name: str, value: Any
 ) -> Any:
     try:
         model_class.__pydantic_validator__.validate_assignment(
@@ -75,7 +73,7 @@ def _validate_and_store_field_value(
 
 def _ask_text(
     prompt: str,
-    model_class: Type[BaseModel],
+    model_class: type[BaseModel],
     draft_model: BaseModel,
     field_name: str,
     default_value: Any,
@@ -108,7 +106,7 @@ def _ask_text(
 
 
 def _ask_questionary_text(
-    prompt: str, validate: Optional[Callable[[str], bool | str]] = None
+    prompt: str, validate: Callable[[str], bool | str] | None = None
 ) -> str:
     answer = questionary.text(
         prompt, validate=validate if validate is not None else (lambda _: True)
@@ -119,11 +117,11 @@ def _ask_questionary_text(
 
 
 def _prompt_for_value(
-    model_class: Type[BaseModel],
+    model_class: type[BaseModel],
     draft_model: BaseModel,
-    field_type: Type,
+    field_type: type,
     field_name: str,
-    description: Optional[str],
+    description: str | None,
     field_info=None,
 ) -> Any:
     """
@@ -162,7 +160,7 @@ def _prompt_for_value(
     ):
         questionary.print(prompt, style="bold")
         named_tuple_values = {}
-        field_defaults = field_type._field_defaults or dict()  # type: ignore
+        field_defaults = field_type._field_defaults or {}  # type: ignore
         assert isinstance(field_defaults, dict)
 
         for sub_field in field_type._fields:  # type: ignore
@@ -232,7 +230,7 @@ def _prompt_for_value(
         )
 
 
-def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
+def _scan_object[T](model_class: type[T], parent: str | None) -> T:
     assert issubclass(model_class, BaseModel), (
         "model_class must be a Pydantic BaseModel"
     )
@@ -285,7 +283,8 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
             return model_class(**field_values)
         except KeyboardInterrupt:
             raise
-        except Exception as e:
+        # 入力型ごとに発生し得る例外をまとめて表示し、再入力を促す境界。
+        except Exception as e:  # noqa: BLE001
             questionary.print("\n⚠️ 入力値にエラーがあります:", style="bold orange")
 
             error_fields = set()
@@ -327,7 +326,7 @@ def _scan_object(model_class: Type[T], parent: Optional[str]) -> T:
 
                 print("エラーとなった項目を再入力してください")
             else:
-                print(f"エラーが発生しました: {str(e)}")
+                print(f"エラーが発生しました: {e!s}")
                 print("すべての項目を再入力してください")
                 valid_inputs = {}
 
@@ -339,7 +338,7 @@ class InputAborted(KeyboardInterrupt):
         return "\n\n⚠️ 入力が中断されました。"
 
 
-def scan_model_input(model_class: Type[T]) -> T:
+def scan_model_input[T](model_class: type[T]) -> T:
     """
     モデルのフィールドをインタラクティブに入力し、モデルのインスタンスを返します。
     標準入力がリダイレクトされている場合はtar形式としてデータを読み込み、ファイル名／データを名前／データに変換します。
@@ -360,8 +359,8 @@ def scan_model_input(model_class: Type[T]) -> T:
 
 def custom_input(input_method: Literal["text", "path"] = "text"):
     def wrapper(source_type):
-        setattr(source_type, "__analysisrun_custom_input__", True)
-        setattr(source_type, "__analysisrun_input_method__", input_method)
+        source_type.__analysisrun_custom_input__ = True
+        source_type.__analysisrun_input_method__ = input_method
         return source_type
 
     return wrapper
@@ -375,7 +374,7 @@ def _get_custom_input_method(v) -> Literal["text", "path"]:
     return getattr(v, "__analysisrun_input_method__", "text")
 
 
-def _is_pydantic_model(v) -> TypeGuard[Type[BaseModel]]:
+def _is_pydantic_model(v) -> TypeGuard[type[BaseModel]]:
     return not _is_custom_input(v) and (
         is_dataclass(v) or hasattr(v, "__get_pydantic_core_schema__")
     )
@@ -491,7 +490,7 @@ class VirtualFile(Path):
                         raise ValueError(f"ファイルが存在しません: '{v}'")
                     if not v.is_file():
                         raise ValueError(f"ファイルのパスを指定してください: '{v}'")
-                except Exception:
+                except (OSError, ValueError):
                     raise ValueError(
                         f"ファイルパスにアクセスすることができません: '{v}'"
                     )

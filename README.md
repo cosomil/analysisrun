@@ -30,7 +30,7 @@ class ImageAnalysisResults(NamedTuple):
         description="Activity spots",
         cleansing=[
             ar.entity_filter("Activity Spots"),
-            ar.dropna(["Area"]),
+            ar.dropna("Area"),
         ],
     )
 
@@ -87,5 +87,4 @@ ctx = ar.read_context(
 
 result = ctx.run_analysis(analyze=analyze, postprocess=postprocess)
 result.to_csv(project_root / "output" / "result.csv", index=False)
-
 ```
