@@ -28,7 +28,10 @@ class Params(BaseModel):
 class ImageAnalysisResults(NamedTuple):
     activity_spots: pd.DataFrame = ar.image_analysis_result_spec(
         description="Activity spots",
-        cleansing=ar.entity_filter("Activity Spots"),
+        cleansing=[
+            ar.entity_filter("Activity Spots"),
+            ar.dropna(["Area"]),
+        ],
     )
 
 

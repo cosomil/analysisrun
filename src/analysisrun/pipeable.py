@@ -97,6 +97,7 @@ class ManualInput[Params: BaseModel]:
 
 CleansingFunc = Callable[[pd.DataFrame | CleansedData], CleansedData]
 NonEmptyCleansingPipeline = tuple[CleansingFunc, *tuple[CleansingFunc, ...]]
+CleansingPipeline = NonEmptyCleansingPipeline | list[CleansingFunc]
 _ImageResultsSerialization = Literal["csv", "pickle"]
 
 
@@ -112,14 +113,14 @@ class _ImageAnalysisResultSpec:
 
 def image_analysis_result_spec(
     description: str,
-    cleansing: CleansingFunc | NonEmptyCleansingPipeline,
+    cleansing: CleansingFunc | CleansingPipeline,
 ) -> Any:
     """
     画像解析結果フィールドの仕様を定義する。
 
     """
     normalized_cleansing = (
-        cleansing if isinstance(cleansing, tuple) else (cleansing,)
+        tuple(cleansing) if isinstance(cleansing, (tuple, list)) else (cleansing,)
     )
     if len(normalized_cleansing) == 0:
         raise ValueError("cleansing must contain at least one function")
@@ -138,6 +139,27 @@ def entity_filter(
     """
 
     return lambda data: filter_by_entity(data, entity=entity)
+
+
+def dropna(column: str | Iterable[str]) -> CleansingFunc:
+    """
+    指定した列のいずれかに欠損値がある行を除去するクレンジング処理を返す。
+
+    Parameters
+    ----------
+    column
+        欠損値を確認する列名。複数指定も可能。
+    """
+
+    subset = (column,) if isinstance(column, str) else tuple(column)
+    if not subset:
+        raise ValueError("column must contain at least one column")
+
+    def _dropna(data: pd.DataFrame | CleansedData) -> CleansedData:
+        target_data = data if isinstance(data, pd.DataFrame) else data._data
+        return CleansedData(_data=target_data.dropna(subset=list(subset)))
+
+    return _dropna
 
 
 def _get_image_analysis_specs[

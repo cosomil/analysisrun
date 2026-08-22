@@ -21,6 +21,7 @@ from analysisrun.pipeable import (
     ManualInput,
     ProcessedInputs,
     create_image_analysis_results_input_model,
+    dropna,
     entity_filter,
     image_analysis_result_spec,
     read_context,
@@ -111,6 +112,71 @@ def test_create_image_analysis_results_input_model_requires_spec():
 
     with pytest.raises(ValueError):
         create_image_analysis_results_input_model(InvalidImageResults)
+
+
+def test_dropna_removes_rows_with_missing_values_in_specified_columns():
+    data = pd.DataFrame(
+        {
+            "foo_Sum": [1.0, None, 3.0, 4.0],
+            "bar_Sum": [1.0, 2.0, None, 4.0],
+            "unrelated": [None, "value", "value", None],
+        }
+    )
+
+    result = dropna(["foo_Sum", "bar_Sum"])(data)
+
+    assert list(result._data.index) == [0, 3]
+
+
+def test_dropna_accepts_single_column_name():
+    data = pd.DataFrame(
+        {
+            "foo_Sum": [1.0, None, 3.0],
+            "bar_Sum": [None, 2.0, 3.0],
+        }
+    )
+
+    result = dropna("foo_Sum")(data)
+
+    assert list(result._data.index) == [0, 2]
+
+
+def test_dropna_can_follow_another_cleansing_function():
+    data = pd.DataFrame(
+        {
+            "Entity": ["Activity Spots", "Nuclei", "Activity Spots"],
+            "foo_Sum": [1.0, None, None],
+        }
+    )
+
+    filtered = entity_filter("Activity Spots")(data)
+    result = dropna(["foo_Sum"])(filtered)
+
+    assert list(result._data.index) == [0]
+
+
+def test_dropna_requires_at_least_one_column():
+    with pytest.raises(ValueError, match="column must contain at least one column"):
+        dropna([])
+
+
+def test_image_analysis_result_spec_accepts_cleansing_list():
+    spec = image_analysis_result_spec(
+        description="Activity spots",
+        cleansing=[entity_filter("Activity Spots"), dropna(["Value"])],
+    )
+
+    data = pd.DataFrame(
+        {
+            "Entity": ["Activity Spots", "Activity Spots", "Nuclei"],
+            "Value": [1.0, None, 3.0],
+        }
+    )
+    result = data
+    for cleansing in spec.cleansing:
+        result = cleansing(result)
+
+    assert list(result._data.index) == [0]
 
 
 def test_read_context_showschema_outputs_streaming_input_schema(monkeypatch):
