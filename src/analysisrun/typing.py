@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import (
     Any,
@@ -12,8 +12,11 @@ from typing import (
 
 @runtime_checkable
 class NamedTupleLike[E](Protocol):
-    _fields: tuple[str, ...]
-    _field_defaults: dict[str, Any]
+    @property
+    def _fields(self) -> tuple[str, ...]: ...
+
+    @property
+    def _field_defaults(self) -> Mapping[str, Any]: ...
 
     def __init__(self, *args): ...
     def __iter__(self) -> Iterator[E]: ...
