@@ -11,6 +11,6 @@ jobs:
       issues: write
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-    - uses: Songmu/tagpr@35daec35e8e3172806c763d8f196e6434fd44fbd
+    - uses: Songmu/tagpr@1fcd7292d1fe8ea9a8313eef46b8d80b7a15d227 # v1.21.2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
