@@ -625,7 +625,8 @@ class AnalysisContext[
         SystemExit
             処理完了時（成功/失敗問わず）
         """
-        assert isinstance(self.state, _AnalyzeSeqState)
+        if not isinstance(self.state, _AnalyzeSeqState):
+            raise TypeError("Expected _AnalyzeSeqState for this analysis mode")
         state = self.state
         parsed: AnalyzeSeqInputModel = state.parsed_input
         field_numbers = state.field_numbers
@@ -706,7 +707,8 @@ class AnalysisContext[
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _AnalyzeSeqState)
+        if not isinstance(self.state, _AnalyzeSeqState):
+            raise TypeError("Expected _AnalyzeSeqState for this analysis mode")
         state = self.state
         parsed: AnalyzeSeqInputModel = state.parsed_input
         field_numbers = state.field_numbers
@@ -773,7 +775,8 @@ class AnalysisContext[
         analyze: Callable[[AnalyzeArgs[Params, ImageAnalysisResults]], pd.Series],
         postprocess: Callable[[PostprocessArgs[Params]], pd.DataFrame] | None,
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _SequentialState)
+        if not isinstance(self.state, _SequentialState):
+            raise TypeError("Expected _SequentialState for this analysis mode")
         state = self.state
         cleansed_lanes = state.cleansed_lanes
         sample_pairs = state.sample_pairs
@@ -832,7 +835,8 @@ class AnalysisContext[
         ]
         | None,
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _SequentialState)
+        if not isinstance(self.state, _SequentialState):
+            raise TypeError("Expected _SequentialState for this analysis mode")
         state = self.state
         cleansed_lanes = state.cleansed_lanes
         sample_pairs = state.sample_pairs
@@ -888,7 +892,8 @@ class AnalysisContext[
         self,
         postprocess: Callable[[PostprocessArgs[Params]], pd.DataFrame] | None,
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _ParallelState)
+        if not isinstance(self.state, _ParallelState):
+            raise TypeError("Expected _ParallelState for this analysis mode")
         state = self.state
         output_dir = state.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -937,7 +942,8 @@ class AnalysisContext[
         ],
         postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None,
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _ParallelState)
+        if not isinstance(self.state, _ParallelState):
+            raise TypeError("Expected _ParallelState for this analysis mode")
         state = self.state
         output_dir = state.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -997,7 +1003,8 @@ class AnalysisContext[
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _ParallelStreamingState)
+        if not isinstance(self.state, _ParallelStreamingState):
+            raise TypeError("Expected _ParallelStreamingState for this analysis mode")
         state = self.state
         with tarfile.open(fileobj=stdout, mode="w|gz") as tar:
             tar_lock = Lock()
@@ -1076,7 +1083,8 @@ class AnalysisContext[
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
-        assert isinstance(self.state, _ParallelStreamingState)
+        if not isinstance(self.state, _ParallelStreamingState):
+            raise TypeError("Expected _ParallelStreamingState for this analysis mode")
         state = self.state
         with tarfile.open(fileobj=stdout, mode="w|gz") as tar:
             tar_lock = Lock()

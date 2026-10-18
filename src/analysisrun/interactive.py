@@ -161,7 +161,8 @@ def _prompt_for_value(
         questionary.print(prompt, style="bold")
         named_tuple_values = {}
         field_defaults = field_type._field_defaults or {}  # type: ignore
-        assert isinstance(field_defaults, dict)
+        if not isinstance(field_defaults, dict):
+            raise TypeError("NamedTuple field defaults must be a dictionary")
 
         for sub_field in field_type._fields:  # type: ignore
             default = field_defaults.get(sub_field)
@@ -231,14 +232,15 @@ def _prompt_for_value(
 
 
 def _scan_object[T](model_class: type[T], parent: str | None) -> T:
-    assert issubclass(model_class, BaseModel), (
-        "model_class must be a Pydantic BaseModel"
-    )
+    if not inspect.isclass(model_class) or not issubclass(model_class, BaseModel):
+        raise TypeError("model_class must be a Pydantic BaseModel")
 
     fields = model_class.model_fields
     valid_inputs = {}
 
     for field_name, field_type in fields.items():
+        if field_type.annotation is None:
+            raise TypeError(f"Field {field_name!r} must have a type annotation")
         if field_type.annotation is type(None):
             valid_inputs[field_name] = None
 
@@ -266,7 +268,6 @@ def _scan_object[T](model_class: type[T], parent: str | None) -> T:
                     else None
                 )
 
-                assert field_type.annotation is not None
                 display_field_name = f"{parent}.{field_name}" if parent else field_name
                 value = _prompt_for_value(
                     model_class=model_class,
