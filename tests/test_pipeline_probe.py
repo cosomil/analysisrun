@@ -11,8 +11,8 @@ def request_for(definition, index):
             (*definition.stages, probe.Stage("finalize", probe.to_result))
         ),
         "stage_index": index,
-        # 子は前段の計算結果を受け取り、元入力や extra も再生成しない。
-        "state": {"input": 4, "value": 8, "synthesized": 11, "extra": 10},
+        # 子は変換済み元入力と前段の計算結果を受け取り、再生成しない。
+        "state": {"image_analysis_results": 4, "value": 8, "synthesized": 12},
     }
 
 
@@ -25,7 +25,7 @@ def test_child_rebuilds_manifest_and_executes_only_second_map(with_preprocess):
     assert response["manifest"] == request["manifest"]
     assert response["stage_index"] == request["stage_index"]
     assert response["calls"] == ["apply_qc"]
-    assert response["state"] == request["state"] | {"value": 29}
+    assert response["state"] == request["state"] | {"value": 24}
 
 
 @pytest.mark.parametrize(
@@ -88,15 +88,24 @@ def test_sequential_execution_needs_no_manifest(monkeypatch, with_preprocess):
         pytest.fail("sequential execution generated a manifest")
 
     monkeypatch.setattr(probe, "canonical_manifest", forbidden)
-    result = probe.build(with_preprocess).finalize(
-        probe.to_result,
-        {"input": 3, "value": None, "synthesized": None, "extra": 0},
-    )
+    initial_state = {"image_analysis_results": 3, "value": None, "synthesized": None}
+    result = probe.build(with_preprocess).finalize(probe.to_result, initial_state)
     assert result["calls"] == (
         (["prepare"] if with_preprocess else [])
         + ["extract_features", "evaluate_qc", "apply_qc", "to_result"]
     )
-    assert result["state"]["result"] == (29 if with_preprocess else 15)
+    expected_input = 4 if with_preprocess else 3
+    assert result["state"] == {
+        "image_analysis_results": expected_input,
+        "value": expected_input * 6,
+        "synthesized": expected_input * 3,
+        "result": expected_input * 6,
+    }
+    assert initial_state == {
+        "image_analysis_results": 3,
+        "value": None,
+        "synthesized": None,
+    }
 
 
 def test_zero_stages_can_finalize_initial_none_values():

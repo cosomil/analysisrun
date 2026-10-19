@@ -17,15 +17,16 @@ from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 
 type State = dict
 type StageFunc = Callable[[State], State]
+type PrepareFunc = Callable[[State], int]
 
 
 @dataclass(frozen=True)
 class Stage:
     kind: str
-    func: StageFunc
+    func: StageFunc | PrepareFunc
 
 
-def callable_id(func: StageFunc) -> tuple[str, str]:
+def callable_id(func: StageFunc | PrepareFunc) -> tuple[str, str]:
     module = func.__module__
     if module in {"__main__", __name__}:
         module = "<entrypoint>"
@@ -49,7 +50,7 @@ def canonical_manifest(stages: tuple[Stage, ...]) -> str:
 class Definition:
     stages: tuple[Stage, ...] = ()
 
-    def append(self, kind: str, func: StageFunc) -> "Definition":
+    def append(self, kind: str, func: StageFunc | PrepareFunc) -> "Definition":
         if kind not in {"preprocess", "map", "synthesize"}:
             raise ValueError("unsupported stage kind")
         if kind == "preprocess" and self.stages:
@@ -82,24 +83,30 @@ class Definition:
             calls = []
         for stage in selected:
             calls.append(stage.func.__qualname__)
-            state = stage.func(state)
+            if stage.kind == "preprocess":
+                # ダミー元入力の変換結果を直接受け取り、他の状態は維持する。
+                state = state | {"image_analysis_results": stage.func(state)}
+            else:
+                state = stage.func(state)
         return {"state": state, "calls": calls}
 
 
-def prepare(state: State) -> State:
-    return state | {"input": state["input"] + 1, "extra": 10}
+def prepare(state: State) -> int:
+    return state["image_analysis_results"] + 1
 
 
 def extract_features(state: State) -> State:
-    return state | {"value": state["input"] * 2}
+    return state | {"value": state["image_analysis_results"] * 2}
 
 
 def evaluate_qc(state: State) -> State:
-    return state | {"synthesized": state["value"] + 3}
+    return state | {"synthesized": state["value"] + state["image_analysis_results"]}
 
 
 def apply_qc(state: State) -> State:
-    return state | {"value": state["value"] + state["synthesized"] + state["extra"]}
+    return state | {
+        "value": state["value"] + state["synthesized"] + state["image_analysis_results"]
+    }
 
 
 def other_map(state: State) -> State:
