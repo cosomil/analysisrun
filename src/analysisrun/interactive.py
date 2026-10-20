@@ -12,11 +12,11 @@ from typing import (
     TypeVar,
     get_origin,
 )
+from warnings import deprecated
 
 import questionary
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import PydanticUndefined, core_schema
-from typing_extensions import deprecated
 
 T = TypeVar("T")
 
