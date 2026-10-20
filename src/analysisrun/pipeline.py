@@ -15,7 +15,6 @@ from typing import Any, Literal, Protocol, runtime_checkable
 import pandas as pd
 
 from .pipeable import Output, PreprocessArgs
-from .scanner import scan
 from .typing import NamedTupleLike
 
 type Inputs = NamedTupleLike[pd.DataFrame]
@@ -89,11 +88,25 @@ class DataFrameInputSnapshot:
         self._lanes = lanes
         self._inputs: dict[int, Inputs] = {}
         names = [lane.data_name for lane in lanes]
-        sources = [scan(frame, names) for frame in inputs] if lanes else []
+        sources = {}
+        for name, frame in inputs._asdict().items():
+            if "Data" not in frame.columns:
+                raise ValueError(f"input {name!r}: missing required 'Data' column")
+            selected = frame.loc[frame["Data"].isin(names)]
+            sources[name] = {
+                data_name: data
+                for data_name, data in selected.groupby(
+                    "Data", sort=False, observed=True
+                )
+            }
         for lane in lanes:
-            frames = [source.get(lane.data_name).data for source in sources]
-            if any(frame.empty for frame in frames):
-                raise ValueError(f"missing lane: {lane.data_name!r}")
+            frames = []
+            for name, source in sources.items():
+                if lane.data_name not in source:
+                    raise ValueError(
+                        f"missing lane: {lane.data_name!r} in input {name!r}"
+                    )
+                frames.append(source[lane.data_name])
             self._inputs[lane.lane_id] = _copy_inputs(type(inputs)(*frames))
 
     def restore(self, lane_id: int) -> Inputs:

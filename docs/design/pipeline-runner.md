@@ -40,11 +40,17 @@ Executor は子の停止・回収も含めて完了してから return / raise �
 共通 InputSnapshot Protocol は `restore_all()` だけを要求する。
 逐次 Executor 向けの追加 Protocol が `restore(lane_id)` を要求する。
 
-DataFrameInputSnapshot は既存 scanner の分割規則を利用する。
+DataFrameInputSnapshot は各入力 DataFrame の `Data` 列のみを使用してレーン分割する。
+Pipeline の必須列は `Data` だけであり、`MultiPointIndex` / `ImageAnalysisMethod` /
+`Filename` の存在・内容には依存しない。`Data` が欠けた場合は入力名を含む
+ValueError とする。対象がゼロレーンの場合も必須列を検証する。
 全入力 DataFrame について必須レーンの存在を初期化時に検証し、対象外レーンは除く。
 スナップショット確定時と各復元時に `copy(deep=True)` し、NamedTuple 型を維持する。
 object 列内の任意 Python オブジェクトまでの完全分離は保証しない。
-scanner / ExecutionContext の製品統合は #87 の範囲。
+`Filename` から `ImageAnalysisMethod` / `Data` を導出する責務は `read_context()` 側にあり、
+既に正規化済みの列は尊重する。preprocess は正規化済み入力を受け取り、変換後も `Data`
+列を保持する。Runner 自体は分割規則を知らない。入力正規化の scanner との共通化、
+ExecutionContext の `Data` 必須チェックと公開 API への接続は #86〜#87 で行う。
 
 ## 更新と失敗
 

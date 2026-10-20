@@ -53,6 +53,114 @@ def run(stages, inputs, **kwargs):
     )
 
 
+@pytest.mark.parametrize("with_preprocess", [False, True])
+def test_pipeline_accepts_data_only_lane_inputs(with_preprocess):
+    inputs = Inputs(pd.DataFrame({"Data": ["a", "unused", "b", "a"]}))
+    calls = []
+
+    def prepare(args):
+        frame = args.image_analysis_results.cells.assign(score=[10, 100, 20, 30])
+        return Prepared(frame, frame[["Data"]])
+
+    def mapping(args):
+        calls.append(args.data_name)
+        data = args.image_analysis_results
+        assert isinstance(data, Prepared if with_preprocess else Inputs)
+        assert data.cells.Data.tolist() == (
+            ["b"] if args.data_name == "b" else ["a", "a"]
+        )
+        assert list(data.cells.columns) == (
+            ["Data", "score"] if with_preprocess else ["Data"]
+        )
+        if with_preprocess:
+            assert list(data.spots.columns) == ["Data"]
+            return int(data.cells.score.sum())
+        return len(data.cells)
+
+    def finalize(args):
+        assert list(args.image_analysis_results) == ["b", "a"]
+        return pd.DataFrame(
+            {"name": list(args.values), "value": list(args.values.values())}
+        )
+
+    stages = [Stage("preprocess", prepare)] if with_preprocess else []
+    stages += [Stage("map", mapping), Stage("finalize", finalize)]
+    result = run(stages, inputs)
+    assert_frame_equal(
+        result,
+        pd.DataFrame(
+            {"name": ["b", "a"], "value": [20, 40] if with_preprocess else [1, 2]}
+        ),
+    )
+    assert calls == ["b", "a"]
+
+
+def test_snapshot_ignores_scanner_column_contents():
+    frame = pd.DataFrame(
+        {
+            "Data": ["b", "a"],
+            "Filename": [None, "invalid"],
+            "MultiPointIndex": [None, None],
+            "ImageAnalysisMethod": [None, ""],
+        }
+    )
+    snapshot = DataFrameInputSnapshot(
+        Inputs(frame), (Lane(0, "a", "A"), Lane(1, "b", "B"))
+    )
+    restored = snapshot.restore_all()
+    assert list(restored) == ["a", "b"]
+    assert_frame_equal(restored["a"].cells, frame.iloc[[1]])
+    assert_frame_equal(restored["b"].cells, frame.iloc[[0]])
+
+
+@pytest.mark.parametrize("field", ["cells", "spots"])
+@pytest.mark.parametrize("targets", [{}, {"a": "A"}])
+@pytest.mark.parametrize("with_preprocess", [False, True])
+def test_missing_data_column_identifies_input_before_stages(
+    field, targets, with_preprocess
+):
+    frame = pd.DataFrame({"Data": ["a"], "score": [1]})
+    prepared = Prepared(
+        **{
+            name: frame.drop(columns="Data") if name == field else frame
+            for name in Prepared._fields
+        }
+    )
+
+    def forbidden(args):
+        pytest.fail("stage ran with missing Data column")
+
+    stages = [Stage("preprocess", lambda a: prepared)] if with_preprocess else []
+    stages += [
+        Stage("synthesize", forbidden),
+        Stage("map", forbidden),
+        Stage("finalize", forbidden),
+    ]
+    with pytest.raises(
+        ValueError, match=f"input '{field}': missing required 'Data' column"
+    ):
+        execute_sequential(
+            stages,
+            params={},
+            image_analysis_results=Inputs(frame) if with_preprocess else prepared,
+            targets=targets,
+            output=lambda *a: None,
+        )
+
+
+@pytest.mark.parametrize("field", ["cells", "spots"])
+def test_snapshot_rejects_missing_lane_in_each_minimal_input(field):
+    frame = pd.DataFrame({"Data": ["a", "b"]})
+    inputs = Prepared(
+        **{
+            name: frame.iloc[:1] if name == field else frame
+            for name in Prepared._fields
+        }
+    )
+    with pytest.raises(ValueError, match=f"missing lane: 'b' in input '{field}'"):
+        DataFrameInputSnapshot(inputs, (Lane(0, "a", "A"), Lane(1, "b", "B")))
+
+
 @pytest.mark.parametrize("preprocess", [False, True])
 def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
     # Neither input object cells nor intermediate/final values require pickle.
