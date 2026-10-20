@@ -297,6 +297,8 @@ def child(stream_in, stream_out, fault="", ack=None):
                     value,
                     f"value lane={lane_id} data_name={lane['data_name']} stage={stage_index}",
                 )
+                if fault == "corrupt_value" and lane == request["lanes"][-1]:
+                    data = b"broken pickle"
                 add(tar, f"lanes/{lane_id}/value.pkl", data)
                 flush(tar, stream_out)
                 if fault == "duplicate":
@@ -345,7 +347,7 @@ class TrackedReader:
 
 
 def receive(stream, request, values, on_event):
-    expected = {lane["lane_id"] for lane in request["lanes"]}
+    expected = {lane["lane_id"]: lane for lane in request["lanes"]}
     seen = set()
     reader = TrackedReader(stream)
     with tarfile.open(fileobj=reader, mode="r|*", bufsize=512) as tar:
@@ -365,7 +367,17 @@ def receive(stream, request, values, on_event):
             if parts[2:] == ["value.pkl"]:
                 if lane_id in seen:
                     raise TransferError(f"duplicate value.pkl lane={lane_id}")
-                values[lane_id] = pickle.loads(data)
+                try:
+                    value = pickle.loads(data)
+                except Exception as exc:
+                    raise TransferError(
+                        f"cannot unpickle value.pkl lane_id={lane_id} "
+                        f"data_name={expected[lane_id].get('data_name')!r} "
+                        f"stage_start={request['stage_start']} "
+                        f"stage_end={request['stage_end']}: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
+                values[lane_id] = value
                 seen.add(lane_id)
                 on_event("value", lane_id, values[lane_id])
             elif parts[2] == "images" and len(parts) > 3:
@@ -376,8 +388,8 @@ def receive(stream, request, values, on_event):
         pass
     if reader.size % 512 or reader.tail != bytes(1024):
         raise TransferError("corrupt TAR: missing end markers")
-    if seen != expected:
-        raise TransferError(f"missing value.pkl lanes={sorted(expected - seen)}")
+    if seen != expected.keys():
+        raise TransferError(f"missing value.pkl lanes={sorted(expected.keys() - seen)}")
 
 
 def run_child(

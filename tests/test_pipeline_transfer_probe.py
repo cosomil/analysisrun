@@ -235,6 +235,49 @@ def test_unpicklable_final_value_has_lane_and_stage(inputs, targets):
         assert "../a/name" in str(exc.value)
 
 
+def test_corrupt_received_value_has_lane_and_segment_context(inputs, targets):
+    processes, events, following = [], [], []
+    values = {0: None, 1: p.Feature(99)}
+    with p.snapshots(inputs, targets, p.prepare) as lanes:
+        paths = [Path(lane["input_path"]) for lane in lanes]
+        with pytest.raises(p.TransferError, match="cannot unpickle value.pkl") as exc:
+            try:
+                p.run_child(
+                    p.request_for(lanes),
+                    {"history": []},
+                    {"history": []},
+                    values,
+                    lambda *event: events.append(event),
+                    fault="corrupt_value",
+                    processes=processes,
+                )
+                following.append("synthesize/finalize")
+            finally:
+                assert all(proc.poll() is not None for proc in processes)
+                assert all(path.exists() for path in paths)
+        error = exc.value.__cause__
+        assert isinstance(error, p.TransferError)
+        assert isinstance(error.__cause__, pickle.UnpicklingError)
+        for diagnostic in (
+            "lane_id=1",
+            "data_name='日本語/b'",
+            "stage_start=2",
+            "stage_end=4",
+            "UnpicklingError",
+        ):
+            assert diagnostic in str(error)
+        assert values == {0: p.Feature(13), 1: p.Feature(99)}
+        assert [event[:2] for event in events] == [
+            ("image", 0),
+            ("image", 0),
+            ("value", 0),
+            ("image", 1),
+            ("image", 1),
+        ]
+    assert following == []
+    assert all(not path.exists() for path in paths)
+
+
 @pytest.mark.parametrize("field", ["params", "synthesized", "value"])
 def test_parent_pickle_failure_has_data_context_and_reaps(inputs, targets, field):
     processes = []
