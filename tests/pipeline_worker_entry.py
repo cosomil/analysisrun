@@ -39,6 +39,8 @@ def wait_for(path):
 
 
 def prepare(args):
+    if args.params.get("fault") == "preprocess":
+        raise LookupError("injected preprocess failure")
     directory = Path(args.params["directory"])
     with (directory / "preprocess").open("a") as file:
         file.write(f"{os.getpid()}\n")
@@ -71,9 +73,9 @@ def first(args):
     if mode == "stderr":
         sys.stderr.write("diagnostic\n" * 10000)
         sys.stderr.flush()
-    fig, ax = plt.subplots()
-    ax.plot([0, 1], [0, int(lane)])
-    args.output(fig, f"lane-{lane}.png", "qc", format="png")
+    emit_image(args)
+    if mode == "duplicate-image":
+        emit_image(args)
     if mode == "fail-after-image" and lane == "0":
         raise LookupError("injected map failure")
     if mode == "image-ack":
@@ -90,7 +92,23 @@ def first(args):
     return {"get_score": lambda: score}
 
 
+def emit_image(args):
+    fig, ax = plt.subplots()
+    lane = args.data_name
+    ax.plot([0, 1], [0, int(lane)])
+    name = (
+        "common.png"
+        if args.params.get("fault") == "common-image"
+        else f"lane-{lane}.png"
+    )
+    args.output(fig, name, "qc", format="png")
+
+
 def second(args):
+    if args.params.get("fault") == "consecutive-image":
+        emit_image(args)
+    if args.params.get("fault") == "unpicklable":
+        return lambda: None
     score = args.value["get_score"]()
     if (
         args.params["history"]
@@ -109,6 +127,8 @@ def initial(args):
 
 
 def synthesize(args):
+    if args.params.get("fault") == "synthesize":
+        raise LookupError("injected synthesize failure")
     directory = Path(args.params["directory"])
     for lane in args.values:
         if not (directory / f"finished-{lane}").exists():
@@ -118,6 +138,8 @@ def synthesize(args):
 
 
 def third(args):
+    if args.params.get("fault") == "later-image":
+        emit_image(args)
     directory = Path(args.params["directory"])
     if not (directory / "synthesize").exists() or args.synthesized["history"]:
         raise ValueError("invalid synthesized state")
@@ -130,10 +152,13 @@ def third(args):
 
 
 def finalize(args):
+    if args.params.get("fault") == "finalize":
+        raise LookupError("injected finalize failure")
     (Path(args.params["directory"]) / "finalize").touch()
-    return pd.DataFrame(
-        {"data": list(args.values), "score": list(args.values.values())}
-    )
+    names = list(args.values)
+    if args.params.get("fault") == "duplicate-result":
+        names = ["same"] * len(names)
+    return pd.DataFrame({"data": names, "score": list(args.values.values())})
 
 
 def other(args):

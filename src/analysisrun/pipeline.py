@@ -26,6 +26,22 @@ class Stage:
     func: Callable[[Any], Any]
 
 
+@contextmanager
+def stage_context(kind: str, index: int, lane: "Lane | None" = None):
+    """Keep the original exception and traceback, adding execution context."""
+    try:
+        yield
+    except Exception as exc:
+        note = f"pipeline stage={kind} stage_index={index}"
+        if lane is not None:
+            note += (
+                f" lane_id={lane.lane_id} data_name={lane.data_name!r}"
+                f" sample_name={lane.sample_name!r}"
+            )
+        exc.add_note(note)
+        raise
+
+
 @dataclass(frozen=True)
 class Lane:
     lane_id: int
@@ -179,17 +195,18 @@ def execute_map_segment(
     """Share lane semantics without serializing consecutive map results."""
     for index, stage in enumerate(segment.stages, segment.start):
         before_stage(index)
-        value = stage.func(
-            MapArgs(
-                restore_params(),
-                lane.data_name,
-                lane.sample_name,
-                restore_inputs(),
-                value,
-                restore_synthesized(),
-                output,
+        with stage_context("map", index, lane):
+            value = stage.func(
+                MapArgs(
+                    restore_params(),
+                    lane.data_name,
+                    lane.sample_name,
+                    restore_inputs(),
+                    value,
+                    restore_synthesized(),
+                    output,
+                )
             )
-        )
     return value
 
 
@@ -234,9 +251,10 @@ def execute_pipeline(
     inputs = image_analysis_results
     index = 0
     if stages[0].kind == "preprocess":
-        inputs = stages[0].func(
-            PreprocessArgs(deepcopy(params), _copy_inputs(inputs), targets)
-        )
+        with stage_context("preprocess", 0):
+            inputs = stages[0].func(
+                PreprocessArgs(deepcopy(params), _copy_inputs(inputs), targets)
+            )
         index = 1
 
     def on_value(lane_id: int, value: Any) -> None:
@@ -251,31 +269,38 @@ def execute_pipeline(
                 end = index + 1
                 while end < len(stages) and stages[end].kind == "map":
                     end += 1
-                map_executor.execute(
-                    MapSegment(index, end, stages[index:end]),
-                    MapExecutionContext(
-                        snapshot,
-                        lanes,
-                        params,
-                        MappingProxyType(values),
-                        synthesized,
-                        output,
-                    ),
-                    on_value,
-                )
+                try:
+                    map_executor.execute(
+                        MapSegment(index, end, stages[index:end]),
+                        MapExecutionContext(
+                            snapshot,
+                            lanes,
+                            params,
+                            MappingProxyType(values),
+                            synthesized,
+                            output,
+                        ),
+                        on_value,
+                    )
+                except Exception as exc:
+                    exc.add_note(
+                        f"pipeline stage=map stage_start={index} stage_end={end}"
+                    )
+                    raise
                 index = end
                 continue
-            args = SynthesizeArgs(
-                deepcopy(params),
-                MappingProxyType(dict(snapshot.restore_all())),
-                MappingProxyType(values),
-                synthesized,
-            )
-            result = stage.func(args)
-            if stage.kind == "finalize":
-                if not isinstance(result, pd.DataFrame):
-                    raise TypeError("finalize must return a pandas DataFrame")
-                return result
+            with stage_context(stage.kind, index):
+                args = SynthesizeArgs(
+                    deepcopy(params),
+                    MappingProxyType(dict(snapshot.restore_all())),
+                    MappingProxyType(values),
+                    synthesized,
+                )
+                result = stage.func(args)
+                if stage.kind == "finalize":
+                    if not isinstance(result, pd.DataFrame):
+                        raise TypeError("finalize must return a pandas DataFrame")
+                    return result
             synthesized = result
             index += 1
     raise RuntimeError("pipeline ended without finalize")

@@ -27,6 +27,7 @@ from typing import Any, BinaryIO
 import matplotlib.pyplot as plt
 
 from .env import get_interactivity
+from .helper import cowsay
 from .pipeable import (
     _add_tar_binary_entry,
     _save_image_bytes_to_dir,
@@ -169,6 +170,20 @@ def writing_tar(stream: BinaryIO):
 
 def _add(archive, name, data, image_type=None):
     _add_tar_binary_entry(archive, name, data, image_type=image_type)
+
+
+class _UniqueEntries:
+    """Enforce uniqueness across images, final results, and the error entry."""
+
+    def __init__(self, archive):
+        self.archive = archive
+        self.names = set()
+
+    def addfile(self, member, fileobj=None):
+        if member.name in self.names:
+            raise TransferError(f"duplicate output TAR entry: {member.name}")
+        self.names.add(member.name)
+        self.archive.addfile(member, fileobj)
 
 
 class _TrackedReader:
@@ -328,6 +343,8 @@ def _write_error(archive, exc, lane, stage_index):
         "protocol_version": 1,
         "lane_id": lane["lane_id"] if lane else None,
         "data_name": lane["data_name"] if lane else None,
+        "sample_name": lane["sample_name"] if lane else None,
+        "stage_kind": "map" if stage_index is not None else None,
         "stage_index": stage_index,
         "error_type": type(exc).__name__,
         "message": str(exc),
@@ -345,7 +362,14 @@ def receive_response(stream, request, emit):
             error = json.loads(data)
             if error["protocol_version"] != 1:
                 raise TransferError("response protocol_version mismatch")
-            raise TransferError(json.dumps(error, ensure_ascii=False))
+            exc = TransferError(json.dumps(error, ensure_ascii=False))
+            exc.add_note(
+                f"pipeline stage=map stage_index={error.get('stage_index')} "
+                f"lane_id={error.get('lane_id')} "
+                f"data_name={error.get('data_name')!r} "
+                f"sample_name={error.get('sample_name')!r}"
+            )
+            raise exc
         parts = member.name.split("/")
         if len(parts) < 3 or parts[0] != "lanes":
             raise TransferError(f"unexpected response entry: {member.name}")
@@ -493,10 +517,25 @@ class MultiprocessMapExecutor:
                 proc.stderr.close()
             if error:
                 wrapped = TransferError(
-                    f"worker failure: {error}; exit={proc.returncode}; "
+                    f"worker failure: stage=map stage_start={segment.start} "
+                    f"stage_end={segment.end} lanes={request['lanes']!r}; "
+                    f"{type(error).__name__}: {error}; exit={proc.returncode}; "
                     f"stderr={diagnostics.decode(errors='replace')}"
                 )
                 wrapped.__cause__ = error
+                for note in getattr(error, "__notes__", ()):
+                    wrapped.add_note(note)
+                if not getattr(wrapped, "__notes__", ()):
+                    wrapped.add_note(
+                        f"pipeline stage=map stage_start={segment.start} "
+                        f"stage_end={segment.end} "
+                        + ", ".join(
+                            f"lane_id={lane['lane_id']} "
+                            f"data_name={lane['data_name']!r} "
+                            f"sample_name={lane['sample_name']!r}"
+                            for lane in request["lanes"]
+                        )
+                    )
                 emit("error", wrapped)
             else:
                 emit(
@@ -537,7 +576,18 @@ class MultiprocessMapExecutor:
                     on_value(*payload)
                 elif kind == "image":
                     lane_id, (name, data, image_type) = payload
-                    self.on_image(lanes[lane_id].data_name, name, data, image_type)
+                    try:
+                        self.on_image(lanes[lane_id].data_name, name, data, image_type)
+                    except Exception as exc:
+                        logger.exception("pipeline image output failed")
+                        lane = lanes[lane_id]
+                        exc.add_note(
+                            f"pipeline stage=map stage_start={segment.start} "
+                            f"stage_end={segment.end} lane_id={lane_id} "
+                            f"data_name={lane.data_name!r} "
+                            f"sample_name={lane.sample_name!r}"
+                        )
+                        raise
             for future in futures:
                 future.result()
         finally:
@@ -612,15 +662,26 @@ def execute_entrypoint(
     if mode == "parallel-entrypoint":
         if output_dir is None:
             raise ValueError("parallel-entrypoint requires output_dir")
-        return run(
-            lambda data_name, name, data, image_type: _save_image_bytes_to_dir(
-                name, data, output_dir
+        try:
+            return run(
+                lambda data_name, name, data, image_type: _save_image_bytes_to_dir(
+                    name, data, output_dir
+                )
             )
-        )
+        except Exception as exc:
+            stderr.write("".join(traceback.format_exception(exc)).encode())
+            context = "\n".join(getattr(exc, "__notes__", ()))
+            message = (
+                f"解析処理に失敗しました。{context}\n担当者にお問い合わせください。"
+            )
+            stderr.write((cowsay(message) + "\n").encode())
+            stderr.flush()
+            raise SystemExit(ExitCodes.PROCESSING_ERROR.value) from exc
     with (
         gzip.GzipFile(fileobj=stdout, mode="wb") as compressed,
-        writing_tar(compressed) as archive,
+        writing_tar(compressed) as raw_archive,
     ):
+        archive = _UniqueEntries(raw_archive)
 
         def on_image(data_name, name, data, image_type):
             _add(archive, f"{data_name}/images/{name}", data, image_type)

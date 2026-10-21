@@ -246,7 +246,8 @@ def test_file_snapshot_types_isolation_and_cleanup(tmp_path):
     assert all(not path.exists() for path in paths)
 
 
-def test_pickle_failure_precedes_children(tmp_path, monkeypatch):
+@pytest.mark.parametrize("field", ["params", "synthesized", "value"])
+def test_pickle_failure_precedes_children(tmp_path, monkeypatch, field):
     def forbidden(*args, **kwargs):
         pytest.fail("must not spawn")
 
@@ -255,10 +256,16 @@ def test_pickle_failure_precedes_children(tmp_path, monkeypatch):
     lanes = (Lane(0, "0", "sample"),)
     executor = p.MultiprocessMapExecutor(stages, ENTRYPOINT, lambda *args: None)
     with p.file_snapshot(entry.inputs(), lanes) as snapshot:
+        bad = lambda: None
         context = MapExecutionContext(
-            snapshot, lanes, {"bad": lambda: None}, {"0": None}, None, None
+            snapshot,
+            lanes,
+            bad if field == "params" else {},
+            {"0": bad if field == "value" else None},
+            bad if field == "synthesized" else None,
+            None,
         )
-        with pytest.raises(p.TransferError, match="cannot pickle params"):
+        with pytest.raises(p.TransferError, match=f"cannot pickle {field}"):
             executor.execute(MapSegment(0, 1, stages[:1]), context, lambda *args: None)
 
 
@@ -466,3 +473,262 @@ def test_on_value_failure_stops_and_reaps(tmp_path, monkeypatch):
         run(tmp_path, on_value=on_value)
     assert all(proc.poll() is not None for proc in processes)
     assert not (tmp_path / "synthesize").exists()
+
+
+@pytest.mark.parametrize(
+    "fault,message",
+    [
+        ("duplicate-image", "duplicate output TAR entry"),
+        ("consecutive-image", "duplicate output TAR entry"),
+        ("later-image", "duplicate output TAR entry"),
+        ("duplicate-result", "duplicate output TAR entry: same/result_json"),
+        ("preprocess", "injected preprocess failure"),
+        ("synthesize", "injected synthesize failure"),
+        ("finalize", "injected finalize failure"),
+        ("unpicklable", "cannot pickle value"),
+        ("common-image", None),
+    ],
+)
+def test_streaming_failures_and_unique_names(tmp_path, fault, message):
+    proc = subprocess.run(
+        [sys.executable, str(ENTRYPOINT)],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env=os.environ
+        | {
+            "ANALYSISRUN_MODE": "parallel-entrypoint-streaming",
+            "ANALYSISRUN_MAX_WORKERS": "1",
+            "TEST_DIRECTORY": str(tmp_path),
+            "TEST_FAULT": fault,
+        },
+    )
+    with tarfile.open(fileobj=BytesIO(proc.stdout)) as tar:
+        names = tar.getnames()
+        assert len(names) == len(set(names))
+        if message:
+            assert proc.returncode != 0
+            assert names[-1] == "error"
+            assert message in tar.extractfile("error").read().decode()
+            assert b"^__^" not in proc.stdout
+            if fault != "preprocess":
+                assert any("/images/" in name for name in names)
+            if fault in {
+                "preprocess",
+                "unpicklable",
+                "duplicate-image",
+                "consecutive-image",
+            }:
+                assert not (tmp_path / "synthesize").exists()
+            if fault != "duplicate-result":
+                assert not (tmp_path / "finalize").exists()
+        else:
+            assert proc.returncode == 0, proc.stderr.decode()
+            assert {f"{lane}/images/common.png" for lane in targets()} <= set(names)
+    assert gzip.decompress(proc.stdout)[-1024:] == bytes(1024)
+
+
+@pytest.mark.parametrize(
+    "fault,kind",
+    [
+        ("preprocess", "preprocess"),
+        ("fail-after-image", "map"),
+        ("synthesize", "synthesize"),
+        ("finalize", "finalize"),
+    ],
+)
+def test_terminal_failure_traceback_then_cowsay(tmp_path, fault, kind):
+    proc = subprocess.run(
+        [sys.executable, str(ENTRYPOINT)],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        env=os.environ
+        | {
+            "ANALYSISRUN_MODE": "parallel-entrypoint",
+            "ANALYSISRUN_MAX_WORKERS": "1",
+            "TEST_DIRECTORY": str(tmp_path),
+            "TEST_FAULT": fault,
+        },
+    )
+    assert proc.returncode != 0
+    diagnostic = proc.stderr.decode()
+    assert (
+        diagnostic.index("Traceback")
+        < diagnostic.index("お問い合わせ")
+        < diagnostic.index("^__^")
+    )
+    assert f"stage={kind}" in diagnostic
+    assert b"^__^" not in proc.stdout
+    if kind == "map":
+        assert "sample 0" in diagnostic
+        assert (tmp_path / "images" / "lane-0.png").exists()
+
+
+def test_local_same_image_name_overwrites_across_lanes(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", "1")
+    result = p.execute_entrypoint(
+        entry.definition(),
+        entrypoint=ENTRYPOINT,
+        params=params(tmp_path, "common-image"),
+        image_analysis_results=entry.inputs(),
+        targets=targets(),
+        mode="parallel-entrypoint",
+        output_dir=tmp_path / "images",
+    )
+    assert len(result) == 4
+    assert [path.name for path in (tmp_path / "images").iterdir()] == ["common.png"]
+    assert (tmp_path / "images" / "common.png").read_bytes().startswith(b"\x89PNG")
+
+
+def test_gzip_images_are_readable_before_pipeline_finishes(tmp_path):
+    from threading import Thread
+
+    proc = subprocess.Popen(
+        [sys.executable, str(ENTRYPOINT)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=os.environ
+        | {
+            "ANALYSISRUN_MODE": "parallel-entrypoint-streaming",
+            "ANALYSISRUN_MAX_WORKERS": "1",
+            "TEST_DIRECTORY": str(tmp_path),
+            "TEST_FAULT": "image-ack",
+        },
+    )
+    images, errors = [], []
+
+    def consume():
+        try:
+            with (
+                gzip.GzipFile(fileobj=proc.stdout.raw) as compressed,
+                tarfile.open(fileobj=compressed, mode="r|", bufsize=512) as tar,
+            ):
+                for member in tar:
+                    data = tar.extractfile(member).read()
+                    if "/images/" in member.name:
+                        assert proc.poll() is None
+                        assert data.startswith(b"\x89PNG")
+                        lane = member.name.split("/")[0]
+                        images.append(lane)
+                        (tmp_path / f"imageack-{lane}").touch()
+        except (AssertionError, OSError, tarfile.TarError, EOFError) as exc:
+            errors.append(exc)
+
+    consumer = Thread(target=consume)
+    consumer.start()
+    try:
+        proc.wait(timeout=25)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        consumer.join(timeout=5)
+    assert not consumer.is_alive()
+    assert proc.returncode == 0, proc.stderr.read().decode()
+    assert not errors
+    assert images == list(targets())
+
+
+def test_worker_failure_reports_exact_stage_lane_sample_and_stderr(tmp_path):
+    with pytest.raises(p.TransferError) as caught:
+        run(tmp_path, "fail-after-image", max_workers=1)
+    message = str(caught.value)
+    for detail in (
+        '"stage_index": 2',
+        '"lane_id": 0',
+        '"sample_name": "sample 0"',
+        '"stage_kind": "map"',
+        "LookupError",
+        "worker diagnostic",
+        "stderr=",
+    ):
+        assert detail in message
+    assert "stage=map stage_index=2" in caught.value.__notes__[0]
+
+
+@pytest.mark.parametrize("field", ["input", "params", "synthesized", "value"])
+def test_worker_deserialization_failure_has_lane_context(tmp_path, field):
+    stages = entry.definition()
+    path = tmp_path / "input.pkl"
+    path.write_bytes(b"broken" if field == "input" else pickle.dumps(entry.inputs()))
+    req = {
+        "protocol_version": 1,
+        "manifest": p.canonical_manifest(stages),
+        "stage_start": 2,
+        "stage_end": 4,
+        "lanes": [
+            {
+                "lane_id": 0,
+                "data_name": "0",
+                "sample_name": "sample 0",
+                "input_path": str(path),
+            }
+        ],
+    }
+    data = archive(
+        [
+            ("request.json", json.dumps(req).encode()),
+            ("params.pkl", b"broken" if field == "params" else pickle.dumps({})),
+            (
+                "synthesized.pkl",
+                b"broken" if field == "synthesized" else pickle.dumps(None),
+            ),
+            (
+                "lanes/0/value.pkl",
+                b"broken" if field == "value" else pickle.dumps(None),
+            ),
+        ]
+    )
+    response = BytesIO()
+    assert p.run_worker(stages, BytesIO(data), response) == 1
+    with tarfile.open(fileobj=BytesIO(response.getvalue())) as tar:
+        assert tar.getnames() == ["error.json"]
+        error = json.loads(tar.extractfile("error.json").read())
+        assert error["error_type"] == "UnpicklingError"
+        assert error["lane_id"] == 0
+        assert error["data_name"] == "0"
+        assert error["sample_name"] == "sample 0"
+        assert error["stage_index"] == (None if field == "value" else 2)
+        assert "Traceback" in error["traceback"]
+    assert response.getvalue()[-1024:] == bytes(1024)
+
+
+def test_notebook_output_and_original_failure_are_preserved(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
+    monkeypatch.setattr(p, "get_interactivity", lambda: "notebook")
+    monkeypatch.setattr(p.pickle, "dumps", lambda *a: pytest.fail("no pickle"))
+    shown = []
+    error = LookupError("notebook failure")
+
+    def display(fig, name, image_type, **kwargs):
+        assert kwargs == {"format": "png"}
+        shown.append((fig, name, image_type))
+        entry.plt.close(fig)
+
+    def mapping(args):
+        entry.emit_image(args)
+
+    def fail(args):
+        raise error
+
+    with pytest.raises(LookupError) as caught:
+        p.execute_entrypoint(
+            [
+                Stage("map", mapping),
+                Stage("map", mapping),
+                Stage("synthesize", fail),
+                Stage("finalize", lambda a: pytest.fail("continued")),
+            ],
+            entrypoint=ENTRYPOINT,
+            params=params(tmp_path, "common-image"),
+            image_analysis_results=entry.inputs(),
+            targets={"0": "sample 0"},
+            output=display,
+        )
+    assert caught.value is error
+    assert "stage=synthesize stage_index=2" in error.__notes__[0]
+    assert len(shown) == 2
+    assert all(
+        name == "common.png" and image_type == "qc" for _, name, image_type in shown
+    )
