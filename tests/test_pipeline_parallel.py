@@ -732,3 +732,73 @@ def test_notebook_output_and_original_failure_are_preserved(tmp_path, monkeypatc
     assert all(
         name == "common.png" and image_type == "qc" for _, name, image_type in shown
     )
+
+
+def test_tar_adapters_borrow_streams_and_reject_unsupported_operations():
+    from io import UnsupportedOperation
+
+    stream = BytesIO()
+    writer = p._CountingWriter(stream)
+    assert writer.write(memoryview(b"payload")) == 7
+    assert writer.tell() == 7
+    with pytest.raises(UnsupportedOperation, match="write-only"):
+        writer.read()
+    with pytest.raises(UnsupportedOperation, match="non-seekable"):
+        writer.seek(0)
+    writer.close()
+    assert not stream.closed
+
+    stream.seek(0)
+    reader = p._TrackedReader(stream)
+    assert reader.read(3) == b"pay"
+    assert reader.tell() == 3
+    with pytest.raises(UnsupportedOperation, match="read-only"):
+        reader.write(b"invalid")
+    with pytest.raises(UnsupportedOperation, match="non-seekable"):
+        reader.seek(0)
+    reader.close()
+    assert not stream.closed
+    assert reader.read() == b"load"
+
+
+@pytest.mark.parametrize("mode", ["sequential", "parallel-entrypoint"])
+def test_entrypoint_requires_parent_inputs_but_not_for_worker(mode):
+    with pytest.raises(ValueError, match="requires inputs and targets"):
+        p.execute_entrypoint(
+            [Stage("finalize", lambda a: pytest.fail("must not execute"))],
+            entrypoint=ENTRYPOINT,
+            mode=mode,
+        )
+
+
+def test_sequential_entrypoint_requires_output_for_maps():
+    with pytest.raises(ValueError, match="requires an Output"):
+        p.execute_entrypoint(
+            [
+                Stage("map", lambda a: pytest.fail("must not execute")),
+                Stage("finalize", lambda a: pd.DataFrame()),
+            ],
+            entrypoint=ENTRYPOINT,
+            mode="sequential",
+            image_analysis_results=entry.inputs(),
+            targets={"0": "sample 0"},
+        )
+
+
+def test_receive_response_keeps_positional_callback_contract():
+    events = []
+
+    def receive(kind, lane_id, payload):
+        events.append((kind, lane_id, payload))
+
+    data = archive(
+        [
+            ("lanes/0/images/test.png", b"image"),
+            ("lanes/0/value.pkl", pickle.dumps({"score": 2})),
+        ]
+    )
+    p.receive_response(BytesIO(data), request(), receive)
+    assert events == [
+        ("image", 0, ("test.png", b"image", None)),
+        ("value", 0, {"score": 2}),
+    ]

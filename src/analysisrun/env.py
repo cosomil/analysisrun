@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import Literal
 
 
 def is_notebook_env() -> bool:
@@ -23,7 +24,7 @@ def is_notebook_env() -> bool:
     return env_name != "TerminalInteractiveShell"
 
 
-def get_interactivity():
+def get_interactivity() -> Literal["notebook", "terminal"] | None:
     """
     対話的な実行環境である場合、その環境を識別する"notebook"または"terminal"を返す。
     """

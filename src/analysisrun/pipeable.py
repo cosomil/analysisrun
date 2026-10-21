@@ -38,7 +38,12 @@ from analysisrun.pipeable_io import (
     redirect_stdout_to_stderr,
 )
 from analysisrun.scanner import Lanes, scan
-from analysisrun.tar import FileIO, create_tar_from_dict, read_tar_as_dict
+from analysisrun.tar import (
+    FileIO,
+    TarEntryWriter,
+    create_tar_from_dict,
+    read_tar_as_dict,
+)
 from analysisrun.typing import NamedTupleLike, VirtualFileLike
 
 
@@ -2216,7 +2221,7 @@ def _try_read_tar_from_bytes(data: bytes) -> dict[str, Any] | None:
 
 
 def _add_tar_binary_entry(
-    tar: tarfile.TarFile,
+    tar: TarEntryWriter,
     name: str,
     content: bytes,
     *,
@@ -2232,7 +2237,7 @@ def _add_tar_binary_entry(
 
 
 def _write_parallel_streaming_result_entries(
-    tar: tarfile.TarFile,
+    tar: TarEntryWriter,
     result_df: pd.DataFrame,
 ) -> None:
     csv_buf = BytesIO()

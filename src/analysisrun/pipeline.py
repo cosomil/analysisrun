@@ -5,7 +5,7 @@ The runner keeps its snapshot alive until then. Values and synthesized objects a
 passed by reference; only inputs and params are isolated for each user call.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ class Stage:
 
 
 @contextmanager
-def stage_context(kind: str, index: int, lane: "Lane | None" = None):
+def stage_context(kind: str, index: int, lane: "Lane | None" = None) -> Iterator[None]:
     """Keep the original exception and traceback, adding execution context."""
     try:
         yield
@@ -100,7 +100,7 @@ def _copy_inputs(inputs: Inputs) -> Inputs:
 class DataFrameInputSnapshot:
     """Copy DataFrames, preserving NamedTuple type, but not nested object cells."""
 
-    def __init__(self, inputs: Inputs, lanes: tuple[Lane, ...]):
+    def __init__(self, inputs: Inputs, lanes: tuple[Lane, ...]) -> None:
         self._lanes = lanes
         self._inputs: dict[int, Inputs] = {}
         names = [lane.data_name for lane in lanes]
@@ -135,7 +135,9 @@ class DataFrameInputSnapshot:
 
 
 @contextmanager
-def dataframe_snapshot(inputs: Inputs, lanes: tuple[Lane, ...]):
+def dataframe_snapshot(
+    inputs: Inputs, lanes: tuple[Lane, ...]
+) -> Iterator[DataFrameInputSnapshot]:
     yield DataFrameInputSnapshot(inputs, lanes)
 
 
@@ -210,7 +212,7 @@ def execute_map_segment(
     return value
 
 
-def _validate_stages(stages: tuple[Stage, ...]) -> None:
+def _validate_stages(stages: Sequence[Stage]) -> None:
     if not stages or stages[-1].kind != "finalize":
         raise ValueError("pipeline must end with finalize")
     for index, stage in enumerate(stages):
@@ -246,8 +248,8 @@ def execute_pipeline(
     lanes = tuple(
         Lane(i, name, sample) for i, (name, sample) in enumerate(targets.items())
     )
-    values = dict.fromkeys(targets)
-    synthesized = None
+    values: dict[str, Any] = dict.fromkeys(targets)
+    synthesized: Any = None
     inputs = image_analysis_results
     index = 0
     if stages[0].kind == "preprocess":

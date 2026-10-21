@@ -4,6 +4,8 @@ Workers reconstruct definitions through the original entrypoint. Never load thes
 pickle archives from an untrusted source. Only the main thread publishes events.
 """
 
+from __future__ import annotations
+
 import gzip
 import json
 import logging
@@ -13,23 +15,27 @@ import subprocess
 import sys
 import tarfile
 import traceback
-from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Buffer, Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from io import BytesIO
+from io import BytesIO, UnsupportedOperation
 from pathlib import Path
 from queue import Empty, Full, Queue
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from types import MappingProxyType
-from typing import Any, BinaryIO
+from typing import IO, Any, BinaryIO, Literal, Protocol, TypedDict, overload
 
 import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib import figure
 
 from .env import get_interactivity
 from .helper import cowsay
 from .pipeable import (
+    Output,
     _add_tar_binary_entry,
+    _NullOutput,
     _save_image_bytes_to_dir,
     _split_evenly_in_order,
     _write_parallel_streaming_result_entries,
@@ -51,11 +57,55 @@ from .pipeline import (
     execute_pipeline,
     execute_sequential,
 )
+from .tar import TarEntryWriter
 
 logger = logging.getLogger(__name__)
 
 # data_name, image_name, encoded image, image_type
 ImageSink = Callable[[str, str, bytes, str | None], None]
+type ImagePayload = tuple[str, bytes, str | None]
+type ResponseEvent = (
+    tuple[Literal["value"], int, Any] | tuple[Literal["image"], int, ImagePayload]
+)
+type WorkerEvent = (
+    ResponseEvent | tuple[Literal["error"], TransferError] | tuple[Literal["done"]]
+)
+
+
+class ResponseSink(Protocol):
+    @overload
+    def __call__(
+        self, kind: Literal["value"], lane_id: int, payload: Any, /
+    ) -> None: ...
+
+    @overload
+    def __call__(
+        self, kind: Literal["image"], lane_id: int, payload: ImagePayload, /
+    ) -> None: ...
+
+
+class WorkerLane(TypedDict):
+    lane_id: int
+    data_name: str
+    sample_name: str
+    input_path: str
+
+
+class WorkerRequest(TypedDict):
+    protocol_version: int
+    manifest: str
+    stage_start: int
+    stage_end: int
+    lanes: list[WorkerLane]
+
+
+class _ReadableBinary(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+class _WritableBinary(Protocol):
+    def write(self, data: Buffer, /) -> int: ...
+    def flush(self) -> None: ...
 
 
 class TransferError(RuntimeError):
@@ -72,7 +122,7 @@ def dumps(value: Any, label: str) -> bytes:
 
 
 def canonical_manifest(stages: Sequence[Stage]) -> str:
-    def identity(func):
+    def identity(func: Callable[..., Any]) -> list[str]:
         module = func.__module__
         if module == "__main__":
             module = "<entrypoint>"
@@ -92,7 +142,7 @@ def canonical_manifest(stages: Sequence[Stage]) -> str:
 
 
 class FileInputSnapshot:
-    def __init__(self, lanes: tuple[Lane, ...], paths: Mapping[int, Path]):
+    def __init__(self, lanes: tuple[Lane, ...], paths: Mapping[int, Path]) -> None:
         self.lanes = lanes
         self.paths = MappingProxyType(dict(paths))
 
@@ -106,7 +156,9 @@ class FileInputSnapshot:
 
 
 @contextmanager
-def file_snapshot(inputs: Inputs, lanes: tuple[Lane, ...]):
+def file_snapshot(
+    inputs: Inputs, lanes: tuple[Lane, ...]
+) -> Iterator[FileInputSnapshot]:
     with TemporaryDirectory(prefix="analysisrun-pipeline-") as directory:
         source = DataFrameInputSnapshot(inputs, lanes)
         paths = {}
@@ -139,24 +191,34 @@ class _CountingWriter:
     the pipe immediately, through public file operations, including small values.
     """
 
-    def __init__(self, stream: BinaryIO):
+    def __init__(self, stream: _WritableBinary) -> None:
         self.stream = stream
         self.position = 0
 
-    def write(self, data):
+    def write(self, data: Buffer, /) -> int:
         written = self.stream.write(data)
         self.position += written
         return written
 
-    def tell(self):
+    def tell(self) -> int:
         return self.position
 
-    def flush(self):
+    def flush(self) -> None:
         self.stream.flush()
+
+    def read(self, size: int = -1, /) -> bytes:
+        raise UnsupportedOperation("write-only TAR stream")
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        raise UnsupportedOperation("non-seekable TAR stream")
+
+    def close(self) -> None:
+        # This adapter borrows the stream; the caller owns its lifetime.
+        self.flush()
 
 
 @contextmanager
-def writing_tar(stream: BinaryIO):
+def writing_tar(stream: _WritableBinary) -> Iterator[tarfile.TarFile]:
     writer = _CountingWriter(stream)
     with tarfile.open(fileobj=writer, mode="w") as archive:
         try:
@@ -168,44 +230,66 @@ def writing_tar(stream: BinaryIO):
             writer.flush()
 
 
-def _add(archive, name, data, image_type=None):
+def _add(
+    archive: TarEntryWriter, name: str, data: bytes, image_type: str | None = None
+) -> None:
     _add_tar_binary_entry(archive, name, data, image_type=image_type)
 
 
 class _UniqueEntries:
     """Enforce uniqueness across images, final results, and the error entry."""
 
-    def __init__(self, archive):
+    def __init__(self, archive: TarEntryWriter) -> None:
         self.archive = archive
-        self.names = set()
+        self.names: set[str] = set()
 
-    def addfile(self, member, fileobj=None):
-        if member.name in self.names:
-            raise TransferError(f"duplicate output TAR entry: {member.name}")
-        self.names.add(member.name)
-        self.archive.addfile(member, fileobj)
+    def addfile(
+        self, tarinfo: tarfile.TarInfo, fileobj: IO[bytes] | None = None
+    ) -> None:
+        if tarinfo.name in self.names:
+            raise TransferError(f"duplicate output TAR entry: {tarinfo.name}")
+        self.names.add(tarinfo.name)
+        self.archive.addfile(tarinfo, fileobj)
 
 
 class _TrackedReader:
-    def __init__(self, stream):
+    def __init__(self, stream: _ReadableBinary) -> None:
         self.stream = stream
         self.size = 0
         self.tail = b""
 
-    def read(self, size=-1):
+    def read(self, size: int = -1, /) -> bytes:
         data = self.stream.read(size)
         self.size += len(data)
         self.tail = (self.tail + data)[-1024:]
         return data
 
+    def tell(self) -> int:
+        return self.size
 
-def _read_entries(stream, on_entry):
+    def write(self, data: Buffer, /) -> int:
+        raise UnsupportedOperation("read-only TAR stream")
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        raise UnsupportedOperation("non-seekable TAR stream")
+
+    def close(self) -> None:
+        # The caller, rather than this adapter, owns the underlying stream.
+        pass
+
+
+def _read_entries(
+    stream: _ReadableBinary, on_entry: Callable[[tarfile.TarInfo, bytes], None]
+) -> None:
     reader = _TrackedReader(stream)
     with tarfile.open(fileobj=reader, mode="r|", bufsize=512) as archive:
         for member in archive:
             if not member.isfile():
                 raise TransferError(f"unexpected non-file entry: {member.name}")
-            on_entry(member, archive.extractfile(member).read())
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise TransferError(f"cannot extract entry: {member.name}")
+            on_entry(member, extracted.read())
         end_offset = archive.offset
     while data := reader.read(65536):
         if data.strip(b"\0"):
@@ -218,7 +302,7 @@ def _read_entries(stream, on_entry):
         raise TransferError("corrupt TAR: missing end markers")
 
 
-def _validate_request(request, stages):
+def _validate_request(request: WorkerRequest, stages: Sequence[Stage]) -> MapSegment:
     _validate_stages(stages)
     if request["protocol_version"] != 1:
         raise TransferError("protocol_version mismatch")
@@ -232,7 +316,8 @@ def _validate_request(request, stages):
         or any(stage.kind != "map" for stage in stages[start:end])
     ):
         raise TransferError("invalid map segment range")
-    ids, names = set(), set()
+    ids: set[int] = set()
+    names: set[str] = set()
     for lane in request["lanes"]:
         lane_id = lane["lane_id"]
         if (
@@ -251,10 +336,14 @@ def _validate_request(request, stages):
 
 
 class _WorkerOutput:
-    def __init__(self, archive, stream, lane_id):
+    def __init__(
+        self, archive: TarEntryWriter, stream: _WritableBinary, lane_id: int
+    ) -> None:
         self.archive, self.stream, self.lane_id = archive, stream, lane_id
 
-    def __call__(self, fig, name, image_type, **kwargs):
+    def __call__(
+        self, fig: figure.Figure, name: str, image_type: str, **kwargs: Any
+    ) -> None:
         buffer = BytesIO()
         fig.savefig(buffer, **kwargs)
         _add(
@@ -270,11 +359,11 @@ class _WorkerOutput:
 
 def run_worker(stages: Sequence[Stage], stdin: BinaryIO, stdout: BinaryIO) -> int:
     """Read the complete request before writing any response bytes."""
-    entries = {}
-    lane = None
-    stage_index = None
+    entries: dict[str, bytes] = {}
+    lane: WorkerLane | None = None
+    stage_index: int | None = None
 
-    def collect(member, data):
+    def collect(member: tarfile.TarInfo, data: bytes) -> None:
         if member.name in entries:
             raise TransferError(f"duplicate request entry: {member.name}")
         entries[member.name] = data
@@ -282,7 +371,7 @@ def run_worker(stages: Sequence[Stage], stdin: BinaryIO, stdout: BinaryIO) -> in
     # Even request failures produce a structured response, after stdin is drained.
     try:
         _read_entries(stdin, collect)
-        request = json.loads(entries["request.json"])
+        request: WorkerRequest = json.loads(entries["request.json"])
         segment = _validate_request(request, stages)
         expected = {"request.json", "params.pkl", "synthesized.pkl"} | {
             f"lanes/{item['lane_id']}/value.pkl" for item in request["lanes"]
@@ -303,7 +392,7 @@ def run_worker(stages: Sequence[Stage], stdin: BinaryIO, stdout: BinaryIO) -> in
                 stage_index = None
                 lane_id = lane["lane_id"]
 
-                def before_stage(index):
+                def before_stage(index: int) -> None:
                     nonlocal stage_index
                     stage_index = index
 
@@ -338,7 +427,12 @@ def run_worker(stages: Sequence[Stage], stdin: BinaryIO, stdout: BinaryIO) -> in
     return 0
 
 
-def _write_error(archive, exc, lane, stage_index):
+def _write_error(
+    archive: TarEntryWriter,
+    exc: Exception,
+    lane: WorkerLane | None,
+    stage_index: int | None,
+) -> None:
     error = {
         "protocol_version": 1,
         "lane_id": lane["lane_id"] if lane else None,
@@ -353,11 +447,15 @@ def _write_error(archive, exc, lane, stage_index):
     _add(archive, "error.json", json.dumps(error, ensure_ascii=False).encode())
 
 
-def receive_response(stream, request, emit):
+def receive_response(
+    stream: _ReadableBinary,
+    request: WorkerRequest,
+    emit: ResponseSink,
+) -> None:
     expected = {lane["lane_id"]: lane for lane in request["lanes"]}
-    seen = set()
+    seen: set[int] = set()
 
-    def receive(member, data):
+    def receive(member: tarfile.TarInfo, data: bytes) -> None:
         if member.name == "error.json":
             error = json.loads(data)
             if error["protocol_version"] != 1:
@@ -404,7 +502,7 @@ def receive_response(stream, request, emit):
         raise TransferError(f"missing value.pkl lanes={sorted(expected.keys() - seen)}")
 
 
-def _stop_process(proc):
+def _stop_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -423,7 +521,7 @@ class MultiprocessMapExecutor:
         *,
         max_workers: int | None = None,
         queue_size: int = 16,
-    ):
+    ) -> None:
         self.manifest = canonical_manifest(stages)
         self.entrypoint = Path(entrypoint).resolve()
         self.on_image = on_image
@@ -434,7 +532,12 @@ class MultiprocessMapExecutor:
             raise ValueError("queue_size must be a positive integer")
         self.queue_size = queue_size
 
-    def execute(self, segment, context: MapExecutionContext, on_value):
+    def execute(
+        self,
+        segment: MapSegment,
+        context: MapExecutionContext,
+        on_value: Callable[[int, Any], None],
+    ) -> None:
         if not isinstance(context.snapshot, FileInputSnapshot):
             raise TypeError("multiprocess execution requires FileInputSnapshot")
         chunks = _split_evenly_in_order(list(context.lanes), self.max_workers)
@@ -446,9 +549,9 @@ class MultiprocessMapExecutor:
         synthesized = dumps(
             context.synthesized, f"synthesized stage_start={segment.start}"
         )
-        requests = []
+        requests: list[tuple[WorkerRequest, dict[int, bytes]]] = []
         for chunk in chunks:
-            lanes = [
+            request_lanes: list[WorkerLane] = [
                 {
                     "lane_id": lane.lane_id,
                     "data_name": lane.data_name,
@@ -457,12 +560,12 @@ class MultiprocessMapExecutor:
                 }
                 for lane in chunk
             ]
-            request = {
+            request: WorkerRequest = {
                 "protocol_version": 1,
                 "manifest": self.manifest,
                 "stage_start": segment.start,
                 "stage_end": segment.end,
-                "lanes": lanes,
+                "lanes": request_lanes,
             }
             values = {
                 lane.lane_id: dumps(
@@ -474,11 +577,11 @@ class MultiprocessMapExecutor:
             }
             requests.append((request, values))
 
-        events = Queue(maxsize=self.queue_size)
+        events: Queue[WorkerEvent] = Queue(maxsize=self.queue_size)
         stopped = Event()
-        processes = []
+        processes: list[subprocess.Popen[bytes]] = []
 
-        def emit(*event):
+        def emit(event: WorkerEvent) -> None:
             while not stopped.is_set():
                 try:
                     events.put(event, timeout=0.05)
@@ -486,24 +589,39 @@ class MultiprocessMapExecutor:
                 except Full:
                     pass
 
-        def manage(proc, request, values):
+        def emit_response(
+            kind: Literal["value", "image"], lane_id: int, payload: Any
+        ) -> None:
+            if kind == "value":
+                emit(("value", lane_id, payload))
+            else:
+                emit(("image", lane_id, payload))
+
+        def manage(
+            proc: subprocess.Popen[bytes],
+            request: WorkerRequest,
+            values: Mapping[int, bytes],
+        ) -> None:
+            stdin, stdout, stderr = proc.stdin, proc.stdout, proc.stderr
+            if stdin is None or stdout is None or stderr is None:
+                raise TransferError("worker requires stdin, stdout, and stderr pipes")
             diagnostics = bytearray()
 
-            def drain():
-                while data := proc.stderr.read(65536):
+            def drain() -> None:
+                while data := stderr.read(65536):
                     diagnostics.extend(data)
 
             drainer = Thread(target=drain)
             drainer.start()
-            error = None
+            error: Exception | None = None
             try:
-                with proc.stdin, writing_tar(proc.stdin) as archive:
+                with stdin, writing_tar(stdin) as archive:
                     _add(archive, "request.json", json.dumps(request).encode())
                     _add(archive, "params.pkl", params)
                     _add(archive, "synthesized.pkl", synthesized)
                     for lane_id, data in values.items():
                         _add(archive, f"lanes/{lane_id}/value.pkl", data)
-                receive_response(proc.stdout, request, emit)
+                receive_response(stdout, request, emit_response)
                 if proc.wait() != 0:
                     raise TransferError(f"worker exited with code {proc.returncode}")
             except Exception as exc:
@@ -513,8 +631,8 @@ class MultiprocessMapExecutor:
             finally:
                 proc.wait()
                 drainer.join()
-                proc.stdout.close()
-                proc.stderr.close()
+                stdout.close()
+                stderr.close()
             if error:
                 wrapped = TransferError(
                     f"worker failure: stage=map stage_start={segment.start} "
@@ -536,14 +654,12 @@ class MultiprocessMapExecutor:
                             for lane in request["lanes"]
                         )
                     )
-                emit("error", wrapped)
+                emit(("error", wrapped))
             else:
-                emit(
-                    "done",
-                )
+                emit(("done",))
 
         pool = ThreadPoolExecutor(max_workers=len(chunks))
-        futures = []
+        futures: list[Future[None]] = []
         try:
             env = os.environ | {"ANALYSISRUN_MODE": "pipeline-worker"}
             for request, values in requests:
@@ -567,15 +683,14 @@ class MultiprocessMapExecutor:
                         if future.done():
                             future.result()
                     continue
-                kind, *payload = event
-                if kind == "error":
-                    raise payload[0]
-                if kind == "done":
+                if event[0] == "error":
+                    raise event[1]
+                if event[0] == "done":
                     remaining -= 1
-                elif kind == "value":
-                    on_value(*payload)
-                elif kind == "image":
-                    lane_id, (name, data, image_type) = payload
+                elif event[0] == "value":
+                    on_value(event[1], event[2])
+                elif event[0] == "image":
+                    lane_id, (name, data, image_type) = event[1], event[2]
                     try:
                         self.on_image(lanes[lane_id].data_name, name, data, image_type)
                     except Exception as exc:
@@ -601,22 +716,23 @@ class MultiprocessMapExecutor:
                 pool.shutdown(wait=True)
                 for proc in processes:
                     for stream in (proc.stdin, proc.stdout, proc.stderr):
-                        stream.close()
+                        if stream is not None:
+                            stream.close()
 
 
 def execute_entrypoint(
     stages: Sequence[Stage],
     *,
     entrypoint: Path,
-    params=None,
-    image_analysis_results=None,
-    targets=None,
-    output=None,
+    params: Any = None,
+    image_analysis_results: Inputs | None = None,
+    targets: Mapping[str, str] | None = None,
+    output: Output | None = None,
     output_dir: Path | None = None,
     mode: str | None = None,
-    stdout=None,
-    stderr=None,
-):
+    stdout: BinaryIO | None = None,
+    stderr: BinaryIO | None = None,
+) -> pd.DataFrame:
     """Internal execution entrance, pending the public builder in #86.
 
     Reconstruct stages before calling this in both parent and worker. Worker
@@ -631,30 +747,36 @@ def execute_entrypoint(
         )
     )
     if mode == "sequential":
+        if image_analysis_results is None or targets is None:
+            raise ValueError("sequential execution requires inputs and targets")
+        if output is None and any(stage.kind == "map" for stage in stages):
+            raise ValueError("sequential map execution requires an Output")
         return execute_sequential(
             stages,
             params=params,
             image_analysis_results=image_analysis_results,
             targets=targets,
-            output=output,
+            output=output if output is not None else _NullOutput(),
         )
-    stdout = stdout if stdout is not None else sys.stdout.buffer
-    stderr = stderr if stderr is not None else sys.stderr.buffer
+    binary_stdout: BinaryIO = stdout if stdout is not None else sys.stdout.buffer
+    binary_stderr: BinaryIO = stderr if stderr is not None else sys.stderr.buffer
     if mode == "pipeline-worker":
-        with redirect_stdout_to_stderr(stderr):
-            status = run_worker(stages, sys.stdin.buffer, stdout)
+        with redirect_stdout_to_stderr(binary_stderr):
+            status = run_worker(stages, sys.stdin.buffer, binary_stdout)
         sys.exit(status)
     if mode not in {"parallel-entrypoint", "parallel-entrypoint-streaming"}:
         raise ValueError(f"unsupported pipeline mode: {mode!r}")
+    if image_analysis_results is None or targets is None:
+        raise ValueError("parallel execution requires inputs and targets")
 
-    def run(on_image):
+    def run(on_image: ImageSink) -> pd.DataFrame:
         executor = MultiprocessMapExecutor(stages, entrypoint, on_image)
         return execute_pipeline(
             stages,
             params=params,
             image_analysis_results=image_analysis_results,
             targets=targets,
-            output=output,
+            output=output if output is not None else _NullOutput(),
             map_executor=executor,
             snapshot_factory=file_snapshot,
         )
@@ -669,31 +791,33 @@ def execute_entrypoint(
                 )
             )
         except Exception as exc:
-            stderr.write("".join(traceback.format_exception(exc)).encode())
+            binary_stderr.write("".join(traceback.format_exception(exc)).encode())
             context = "\n".join(getattr(exc, "__notes__", ()))
             message = (
                 f"解析処理に失敗しました。{context}\n担当者にお問い合わせください。"
             )
-            stderr.write((cowsay(message) + "\n").encode())
-            stderr.flush()
+            binary_stderr.write((cowsay(message) + "\n").encode())
+            binary_stderr.flush()
             raise SystemExit(ExitCodes.PROCESSING_ERROR.value) from exc
     with (
-        gzip.GzipFile(fileobj=stdout, mode="wb") as compressed,
+        gzip.GzipFile(fileobj=binary_stdout, mode="wb") as compressed,
         writing_tar(compressed) as raw_archive,
     ):
         archive = _UniqueEntries(raw_archive)
 
-        def on_image(data_name, name, data, image_type):
+        def on_image(
+            data_name: str, name: str, data: bytes, image_type: str | None
+        ) -> None:
             _add(archive, f"{data_name}/images/{name}", data, image_type)
             compressed.flush()
 
         try:
-            with redirect_stdout_to_stderr(stderr):
+            with redirect_stdout_to_stderr(binary_stderr):
                 result = run(on_image)
             _write_parallel_streaming_result_entries(archive, result)
         except Exception as exc:
             logger.exception("pipeline execution failed")
             exit_with_error_streaming(
-                ExitCodes.PROCESSING_ERROR, str(exc), archive, stderr, exc
+                ExitCodes.PROCESSING_ERROR, str(exc), archive, binary_stderr, exc
             )
     sys.exit(0)
