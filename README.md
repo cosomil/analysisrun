@@ -121,20 +121,19 @@ result.to_csv(project_root / "output" / "result.csv", index=False)
 画像は比較的小さく、1 レーン数枚程度を想定しています。BytesIO / bytes と有界 Queue で
 転送するため、画像単位のメモリを使用します。チャンク転送や一時ファイルへの退避は行いません。
 
-### 実行モードと旧 API からの移行
+### 集計と前処理
 
-未リリースの API 整理により `run_analysis` / `run_analysis_with_preprocess`、
-専用の Analyze/Postprocess Args、`ProcessedInputs` / `extra`、`analyzeseq` は削除しました。
-互換エイリアスやラッパーはありません。`read_context() → ctx.pipeline() → finalize()`
-を使用してください。map はレーン値（例: dict）を返し、最終 DataFrame の組み立ては
+`read_context() → ctx.pipeline() → finalize()` で解析を実行します。
+map はレーン値（例: dict）を返し、最終 DataFrame の組み立ては
 finalize で `pd.DataFrame(args.values.values())` のように行います。
 `data` / `sample_name` 列が必要なら map の戻り値に明示的に含めます。
-既存の Series を使う場合も、この変換は利用側の finalize が担います。
 
 preprocess は定義の先頭で最大一度だけ設定でき、finalize の実行ごとに一度、
 変換後の入力 NamedTuple を直接返します。共有情報は synthesize で返し、
 後続の map / synthesize / finalize から `args.synthesized` で参照します。
-[前処理の移行例](example/preprocess/README.md) を参照してください。
+[前処理の使用例](example/preprocess/README.md) を参照してください。
+
+### 実行モード
 
 - `notebook`: Notebook 内で逐次実行し DataFrame を返す。ManualInput が必須。
 - `interactive`: TTY 端末で map を Worker により並列実行し DataFrame を返す。

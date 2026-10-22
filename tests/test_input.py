@@ -205,8 +205,8 @@ def test_read_context_noninteractive_invalid_stdin_tar_outputs_error_tar(monkeyp
     )
 
 
-@pytest.mark.parametrize("method", ["analyze", "postprocess"])
-def test_read_context_unsupported_distributed_mode_outputs_error_tar(
+@pytest.mark.parametrize("method", ["unsupported", "invalid"])
+def test_read_context_unsupported_mode_outputs_error_tar(
     monkeypatch, method: str
 ):
     monkeypatch.setenv("ANALYSISRUN_MODE", method)
@@ -350,16 +350,3 @@ def test_invalid_input_stays_in_streaming_error_protocol(
     assert caught.value.code == 2
     result = read_tar_as_dict(BytesIO(response.getvalue()))
     assert "error" in result
-
-
-@pytest.mark.parametrize(
-    "mode", ["analyzeseq", "pipeline-worker", "sequential", "parallel-entrypoint"]
-)
-def test_removed_modes_are_rejected(monkeypatch, mode):
-    monkeypatch.setenv("ANALYSISRUN_MODE", mode)
-    _force_interactivity(monkeypatch, None)
-    response = BytesIO()
-    with pytest.raises(SystemExit) as caught:
-        read_context(Params, ImageResults, stdin=BytesIO(), stdout=response)
-    assert caught.value.code == 2
-    assert mode in read_tar_as_dict(BytesIO(response.getvalue()))["error"]

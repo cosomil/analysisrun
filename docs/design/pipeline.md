@@ -11,8 +11,7 @@
 ## 構築と実行の境界
 
 - `read_context(Params, ImageResults)` の戻り値に `pipeline()` を追加する。
-  新 API の実行コンテキスト名は `ExecutionContext[P, I]` とする。
-  現 `AnalysisContext` からの改名・互換性は #86 で扱う。
+  実行コンテキスト名は `ExecutionContext[P, I]` とする。
 - `pipeline()` は `InitialPipeline[P, I]` を返す。
   `preprocess()` を持つのはこの型のみ。最初の `preprocess` / `map` /
   `synthesize` の追加で `PipelineBuilder` を返す。
@@ -103,8 +102,6 @@ class ExecutionContext[P: BaseModel, I: NamedTupleLike[pd.DataFrame]]:
 後続の `image_analysis_results` は変換後の入力を指す。
 map / synthesize は元入力を置換せず、読み取り専用として扱う。
 全体の中間値は `synthesized` が担い、必要なら先頭の synthesize で生成する。
-新 Pipeline の型・Args・状態・転送に `extra` / `ProcessedInputs` は導入しない。
-旧 API と専用型は #87 で削除する。互換レイヤーは残さない。
 Mapping の外側を保護しても DataFrame 等の内部まで immutable にはならないため、
 共有値の破壊的変更によってレーン間の結果を変える実装は契約外とする。
 
@@ -308,6 +305,6 @@ pickle 復元・バリア・Output・エラー集約の本実装の検証は含�
 - #85: Output、失敗集約、ストリーミング・子モードの終了契約を実装する。
 - #86: 本メモの InitialPipeline / PipelineBuilder と Args のジェネリック検証、
   不正な preprocess の静的・実行時拒否を完成させる。両公開型の独立性、
-  PipelineBuilder / Args の4要素型、ExecutionContext への改名・互換性を扱う。
-- #87: 旧 API と重複状態を削除し、Pipeline に統一する。入力 NamedTuple は preprocess、
-  共有結果は synthesize、DataFrame 集約は finalize が担う。既存の外部入力形式は維持する。
+  PipelineBuilder / Args の4要素型、ExecutionContext への接続を扱う。
+- #87: 入力処理・実行コンテキスト・Output・Worker 通信・実行入口の責務を整理する。
+  入力 NamedTuple は preprocess、共有結果は synthesize、DataFrame 集約は finalize が担う。

@@ -3,7 +3,7 @@
 `src/analysisrun/pipeline.py` は、[#81](pipeline.md) のステージ列と
 [#82](pipeline-transfer.md) の状態契約を実行する内部エンジン。
 公開ビルダーと ExecutionContext への接続は #86 で実装した。
-[公開 API](../pipeline.md) を参照。#87 で旧 API を削除し Pipeline に一本化した。
+[公開 API](../pipeline.md) を参照。
 
 ## 呼び出しと責務
 

@@ -76,8 +76,7 @@ None を返して状態を置換することもできる。
 `InitialPipeline[P, I]` のみが `preprocess(func)` を提供する。
 `func: Callable[[PreprocessArgs[P, I]], J]` はレーン分割前の全体入力と targets を
 受け取り、変換後の DataFrame NamedTuple を直接返す。後続の入力型は J に変わる。
-元入力は Context に残る。新 API の共有追加情報は synthesize の戻り値として扱い、
-旧 API の `ProcessedInputs` / `extra` を使用しない。
+元入力は Context に残る。共有情報は synthesize の戻り値として扱う。
 
 前処理後の各 DataFrame は全対象レーンの `Data` 列を含む必要がある。
 `read_context()` は既存 CSV の Filename からの正規化を維持するが、前処理後には
@@ -101,6 +100,4 @@ scanner や cleansing を再適用しない。後続のレーン分割は Data �
 `uv run pytest tests/test_pipeline_typing.py` は basedpyright で成功例を検証し、
 失敗例の診断位置・種類を確認する。
 
-旧 `run_analysis` 系メソッドと専用型は #87 で削除した。互換ラッパーは設けない。
-入力形式・実行モード・移行手順は [README](../README.md#実行モードと旧-api-からの移行) を参照。
-クラス名は ExecutionContext に変更し、AnalysisContext の互換エイリアスは設けない。
+集計・前処理の使い方と実行モードは [README](../README.md#集計と前処理) を参照。

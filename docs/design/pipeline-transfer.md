@@ -5,13 +5,13 @@
 [#81 の構築モデル](pipeline.md) を前提にする。連続 map の実行範囲とバリアについては
 本書が #81 の単一 `stage_index` 案を更新する。
 本番 Executor は実装せず、`tests/pipeline_transfer_probe.py` と
-`tests/test_pipeline_transfer_probe.py` に独立実験を置く。既存 API は変更しない。
+`tests/test_pipeline_transfer_probe.py` に独立実験を置く。
 
 ## 状態と遷移
 
 親が、preprocess 後の `image_analysis_results` のスナップショット、レーン別
 `values`、共有 `synthesized` を所有する。元の ExecutionContext 入力、params、
-固定の対象レーン（data_name / sample_name / 順序）は別に扱う。新 API に extra はない。
+固定の対象レーン（data_name / sample_name / 順序）は別に扱う。
 
 | 境界 | 場所 | 入力 | 更新・出力 | 次へ進める条件 |
 | --- | --- | --- | --- | --- |
@@ -149,8 +149,8 @@ error.json                  # 失敗時のみ
 
 実行前のエラーでは lane_id / data_name / stage_index を null にする。失敗した map 以降を
 実行しない。親は error.json、非ゼロ終了、TAR 破損、未受信 / 重複 value.pkl を失敗とする。
-stderr と終了コードも保持する。既存 API の CSV / Series と非構造化 `error` エントリは
-この形式とは独立であり、移行期間中の既存動作を維持する。
+stderr と終了コードも保持する。外部 TAR の `result_csv` / `result_json` と
+非構造化 `error` エントリは、この内部通信形式とは独立した出力契約を持つ。
 
 親で value.pkl の復元に失敗した場合は、lane_id / data_name / stage_start / stage_end と
 原因の例外型・メッセージを付けた TransferError に包み、元例外を cause に保持する。
@@ -201,7 +201,7 @@ UnpicklingError が保持され、レーン0の値と受信済み画像は維持
 
 ### 制限と後続への引き継ぎ
 
-- 実画像のレンダリング・Output 製品統合は既存 API の範囲。今回の実験は画像に相当する
+- 実画像のレンダリング・Output 製品統合は実験の対象外。今回の実験は画像に相当する
   bytes を一枚ずつ流して順序・到着を検証する。
 - TAR の標準 record バッファでは小さい画像・結果の送信が子終了まで遅れる。
   実験はエントリごとに書込バッファを排出し、親の読込 bufsize を512にする。
@@ -215,4 +215,4 @@ UnpicklingError が保持され、レーン0の値と受信済み画像は維持
 - #83: Notebook を含む正式な逐次 Executor と DataFrame 戻り値の検証。
 - #84: Map Segment の実並列実行・スケジューリング・全子の停止と回収・バリア。
 - #85: Output、構造化例外、最終ストリーミングの製品実装。
-- #86: 公開ビルダー・型・ExecutionContext。#87: scanner 統合・旧 API の移行と削除。
+- #86: 公開ビルダー・型・ExecutionContext。#87: scanner 統合・実行コンテキストと入出力の責務整理。

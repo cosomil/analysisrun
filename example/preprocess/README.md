@@ -1,6 +1,6 @@
 # preprocess example
 
-`read_context() → pipeline().preprocess().synthesize().map().finalize()` の移行例です。
+`read_context() → pipeline().preprocess().synthesize().map().finalize()` の使用例です。
 対話端末以外から手動入力で実行する場合は環境判定を指定します。
 
 ```bash
@@ -13,6 +13,6 @@ ANALYSISRUN_INTERACTIVITY=terminal uv run python -m example.preprocess
 - scan_fields は正規化済み DataFrame から Fields を復元する。
 - finalize は `args.values` から DataFrame を組み立て、threshold と is_valid を追加する。
 
-旧 `ProcessedInputs` / `extra` は削除しました。入力変換は preprocess、共有値は
-synthesize に移してください。preprocess 後に cleansing は再適用されません。
+入力変換は preprocess、共有値の生成は synthesize が担います。
+preprocess 後に cleansing は再適用されません。
 結果は `example/preprocess/output/result.csv` に出力されます。

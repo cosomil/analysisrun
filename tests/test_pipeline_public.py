@@ -164,7 +164,7 @@ def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
         assert (tmp_path / "0001.png").exists()
 
 
-def test_preprocess_example_preserves_previous_aggregation(monkeypatch, tmp_path):
+def test_preprocess_example_aggregation_matches_expected_output(monkeypatch, tmp_path):
     from example.preprocess import __main__ as example
 
     _force_interactivity(monkeypatch, "notebook")
