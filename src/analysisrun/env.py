@@ -50,3 +50,29 @@ def get_entrypoint() -> Path | None:
     if main and hasattr(main, "__file__") and main.__file__:
         return Path(main.__file__).resolve()
     return None
+
+
+type ExecutionMode = Literal["notebook", "interactive", "streaming", "showschema"]
+type ProcessRole = Literal["parent", "parallel-worker"]
+
+
+def get_process_role() -> ProcessRole:
+    role = os.getenv("ANALYSISRUN_PROCESS_ROLE", "parent")
+    if role == "parent" or role == "parallel-worker":
+        return role
+    raise ValueError(f"unsupported process role: {role!r}")
+
+
+def get_execution_mode() -> ExecutionMode:
+    forced = os.getenv("ANALYSISRUN_MODE")
+    if forced == "showschema":
+        return "showschema"
+    if forced is not None:
+        raise ValueError(f"未対応のANALYSISRUN_MODEです: {forced}")
+    match get_interactivity():
+        case "notebook":
+            return "notebook"
+        case "terminal":
+            return "interactive"
+        case None:
+            return "streaming"

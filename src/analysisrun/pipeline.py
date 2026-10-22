@@ -15,14 +15,33 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import pandas as pd
 from pydantic import BaseModel
 
-from .pipeable import Output, PreprocessArgs
+from .output import Output
 from .typing import NamedTupleLike
 
 if TYPE_CHECKING:
-    from .pipeable import ExecutionContext
+    from .context import ExecutionContext
 
 
 type Inputs = NamedTupleLike[pd.DataFrame]
+
+
+@dataclass
+class PreprocessArgs[
+    Params: BaseModel,
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
+]:
+    params: Params
+    """
+    解析全体に関わるパラメータ
+    """
+    image_analysis_results: ImageAnalysisResults
+    """
+    cleansing済みの画像解析結果（DataFrame）
+    """
+    targets: Mapping[str, str]
+    """
+    解析対象データ。keyはdata_name、valueはsample_name
+    """
 
 
 @dataclass(frozen=True)

@@ -101,5 +101,6 @@ scanner や cleansing を再適用しない。後続のレーン分割は Data �
 `uv run pytest tests/test_pipeline_typing.py` は basedpyright で成功例を検証し、
 失敗例の診断位置・種類を確認する。
 
-旧 `run_analysis` 系メソッドは #87 の整理まで残る。
+旧 `run_analysis` 系メソッドと専用型は #87 で削除した。互換ラッパーは設けない。
+入力形式・実行モード・移行手順は [README](../README.md#実行モードと旧-api-からの移行) を参照。
 クラス名は ExecutionContext に変更し、AnalysisContext の互換エイリアスは設けない。

@@ -28,50 +28,59 @@ class PreprocessedImageAnalysisResults(NamedTuple):
 
 
 @dataclass
-class Extra:
+class SharedSummary:
     target_count: int
 
 
 def preprocess(
     args: ar.PreprocessArgs[Params, ImageAnalysisResults],
-) -> ar.ProcessedInputs[PreprocessedImageAnalysisResults, Extra]:
+) -> PreprocessedImageAnalysisResults:
     df = args.image_analysis_results.activity_spots.copy()
     df["scaled_value"] = df["Value"] * args.params.threshold
     max_value = float(df["scaled_value"].max())
     df["scaled_ratio"] = df["scaled_value"] / max_value if max_value else 0.0
 
-    return ar.ProcessedInputs(
-        image_analysis_results=PreprocessedImageAnalysisResults(activity_spots=df),
-        extra=Extra(target_count=len(df)),
+    return PreprocessedImageAnalysisResults(activity_spots=df)
+
+
+def synthesize(
+    args: ar.SynthesizeArgs[Params, PreprocessedImageAnalysisResults, None, None],
+) -> SharedSummary:
+    return SharedSummary(
+        target_count=sum(
+            len(value.activity_spots) for value in args.image_analysis_results.values()
+        )
     )
 
 
 def analyze(
-    args: ar.AnalyzeArgsWithPreprocess[
+    args: ar.MapArgs[
         Params,
         PreprocessedImageAnalysisResults,
-        Extra,
+        None,
+        SharedSummary,
     ],
-) -> pd.Series:
+) -> dict[str, object]:
     df = args.image_analysis_results.activity_spots
     fields = ar.scan_fields(df, args.data_name)
 
-    return pd.Series(
-        {
-            "sample_name": args.sample_name,
-            "spot_count": len(df),
-            "scaled_value_sum": float(df["scaled_value"].sum()),
-            "scaled_ratio_mean": float(df["scaled_ratio"].mean()),
-            "target_count": args.extra.target_count,
-            "image_analysis_method": fields.image_analysis_method,
-        }
-    )
+    return {
+        "data": args.data_name,
+        "sample_name": args.sample_name,
+        "spot_count": len(df),
+        "scaled_value_sum": float(df["scaled_value"].sum()),
+        "scaled_ratio_mean": float(df["scaled_ratio"].mean()),
+        "target_count": args.synthesized.target_count,
+        "image_analysis_method": fields.image_analysis_method,
+    }
 
 
 def postprocess(
-    args: ar.PostprocessArgsWithPreprocess[Params, Extra],
+    args: ar.SynthesizeArgs[
+        Params, PreprocessedImageAnalysisResults, dict[str, object], SharedSummary
+    ],
 ) -> pd.DataFrame:
-    result = args.analysis_results.copy()
+    result = pd.DataFrame(args.values.values())
     result["threshold"] = args.params.threshold
     result["is_valid"] = result["scaled_value_sum"] >= result["threshold"]
     return result
@@ -93,11 +102,12 @@ def main() -> None:
         output_dir=OUTPUT_DIR,
     )
 
-    result = ctx.run_analysis_with_preprocess(
-        preprocessed_image_analysis_results=PreprocessedImageAnalysisResults,
-        preprocess=preprocess,
-        analyze=analyze,
-        postprocess=postprocess,
+    result = (
+        ctx.pipeline()
+        .preprocess(preprocess)
+        .synthesize(synthesize)
+        .map(analyze)
+        .finalize(postprocess)
     )
     result.to_csv(OUTPUT_DIR / "result.csv", index=False)
     print(result)

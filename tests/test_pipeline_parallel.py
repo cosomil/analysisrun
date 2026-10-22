@@ -12,7 +12,7 @@ from threading import get_ident
 import pandas as pd
 import pytest
 
-from analysisrun import pipeline_parallel as p
+from analysisrun import pipeline_worker as p
 from analysisrun.pipeline import (
     Lane,
     MapExecutionContext,
@@ -21,6 +21,7 @@ from analysisrun.pipeline import (
     execute_pipeline,
     execute_sequential,
 )
+from analysisrun.pipeline_entrypoint import execute_entrypoint
 from tests import pipeline_worker_entry as entry
 
 ENTRYPOINT = Path(entry.__file__)
@@ -103,7 +104,7 @@ def test_parallel_segments_equivalent_and_reaped(tmp_path, monkeypatch):
     assert len((tmp_path / "preprocess").read_text().splitlines()) == 1
     assert all(paths == snapshots[0] for paths in snapshots)
     assert all(not path.exists() for path in snapshots[0])
-    sequential_dir = tmp_path / "sequential"
+    sequential_dir = tmp_path / "notebook"
     sequential_dir.mkdir()
 
     def discard(fig, *args, **kwargs):
@@ -293,7 +294,7 @@ def test_external_streaming_contract(tmp_path, fault):
         check=False,
         env=os.environ
         | {
-            "ANALYSISRUN_MODE": "parallel-entrypoint-streaming",
+            "TEST_EXECUTION_MODE": "streaming",
             "ANALYSISRUN_MAX_WORKERS": "2",
             "TEST_DIRECTORY": str(tmp_path),
             "TEST_FAULT": fault,
@@ -318,13 +319,13 @@ def test_external_streaming_contract(tmp_path, fault):
 
 def test_parallel_entrypoint_returns_frame_and_saves_images(tmp_path, monkeypatch):
     monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", "2")
-    result = p.execute_entrypoint(
+    result = execute_entrypoint(
         entry.definition(),
         entrypoint=ENTRYPOINT,
         params=params(tmp_path),
         image_analysis_results=entry.inputs(),
         targets=targets(),
-        mode="parallel-entrypoint",
+        mode="interactive",
         output_dir=tmp_path / "images",
     )
     assert len(result) == 4
@@ -376,10 +377,10 @@ def test_notebook_entrance_avoids_binary_stdout_and_pickle(tmp_path, monkeypatch
     from io import StringIO
 
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
-    monkeypatch.setattr(p, "get_interactivity", lambda: "notebook")
+    monkeypatch.setenv("ANALYSISRUN_INTERACTIVITY", "notebook")
     monkeypatch.setattr(p.sys, "stdout", StringIO())
     monkeypatch.setattr(p.pickle, "dumps", lambda *a, **k: pytest.fail("no pickle"))
-    result = p.execute_entrypoint(
+    result = execute_entrypoint(
         [Stage("finalize", entry.finalize)],
         entrypoint=ENTRYPOINT,
         params=params(tmp_path),
@@ -497,7 +498,7 @@ def test_streaming_failures_and_unique_names(tmp_path, fault, message):
         check=False,
         env=os.environ
         | {
-            "ANALYSISRUN_MODE": "parallel-entrypoint-streaming",
+            "TEST_EXECUTION_MODE": "streaming",
             "ANALYSISRUN_MAX_WORKERS": "1",
             "TEST_DIRECTORY": str(tmp_path),
             "TEST_FAULT": fault,
@@ -545,7 +546,7 @@ def test_terminal_failure_traceback_then_cowsay(tmp_path, fault, kind):
         check=False,
         env=os.environ
         | {
-            "ANALYSISRUN_MODE": "parallel-entrypoint",
+            "TEST_EXECUTION_MODE": "interactive",
             "ANALYSISRUN_MAX_WORKERS": "1",
             "TEST_DIRECTORY": str(tmp_path),
             "TEST_FAULT": fault,
@@ -567,13 +568,13 @@ def test_terminal_failure_traceback_then_cowsay(tmp_path, fault, kind):
 
 def test_local_same_image_name_overwrites_across_lanes(tmp_path, monkeypatch):
     monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", "1")
-    result = p.execute_entrypoint(
+    result = execute_entrypoint(
         entry.definition(),
         entrypoint=ENTRYPOINT,
         params=params(tmp_path, "common-image"),
         image_analysis_results=entry.inputs(),
         targets=targets(),
-        mode="parallel-entrypoint",
+        mode="interactive",
         output_dir=tmp_path / "images",
     )
     assert len(result) == 4
@@ -590,7 +591,7 @@ def test_gzip_images_are_readable_before_pipeline_finishes(tmp_path):
         stderr=subprocess.PIPE,
         env=os.environ
         | {
-            "ANALYSISRUN_MODE": "parallel-entrypoint-streaming",
+            "TEST_EXECUTION_MODE": "streaming",
             "ANALYSISRUN_MAX_WORKERS": "1",
             "TEST_DIRECTORY": str(tmp_path),
             "TEST_FAULT": "image-ack",
@@ -696,7 +697,7 @@ def test_worker_deserialization_failure_has_lane_context(tmp_path, field):
 
 def test_notebook_output_and_original_failure_are_preserved(tmp_path, monkeypatch):
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
-    monkeypatch.setattr(p, "get_interactivity", lambda: "notebook")
+    monkeypatch.setenv("ANALYSISRUN_INTERACTIVITY", "notebook")
     monkeypatch.setattr(p.pickle, "dumps", lambda *a: pytest.fail("no pickle"))
     shown = []
     error = LookupError("notebook failure")
@@ -713,7 +714,7 @@ def test_notebook_output_and_original_failure_are_preserved(tmp_path, monkeypatc
         raise error
 
     with pytest.raises(LookupError) as caught:
-        p.execute_entrypoint(
+        execute_entrypoint(
             [
                 Stage("map", mapping),
                 Stage("map", mapping),
@@ -761,10 +762,10 @@ def test_tar_adapters_borrow_streams_and_reject_unsupported_operations():
     assert reader.read() == b"load"
 
 
-@pytest.mark.parametrize("mode", ["sequential", "parallel-entrypoint"])
+@pytest.mark.parametrize("mode", ["notebook", "interactive"])
 def test_entrypoint_requires_parent_inputs_but_not_for_worker(mode):
     with pytest.raises(ValueError, match="requires inputs and targets"):
-        p.execute_entrypoint(
+        execute_entrypoint(
             [Stage("finalize", lambda a: pytest.fail("must not execute"))],
             entrypoint=ENTRYPOINT,
             mode=mode,
@@ -773,13 +774,13 @@ def test_entrypoint_requires_parent_inputs_but_not_for_worker(mode):
 
 def test_sequential_entrypoint_requires_output_for_maps():
     with pytest.raises(ValueError, match="requires an Output"):
-        p.execute_entrypoint(
+        execute_entrypoint(
             [
                 Stage("map", lambda a: pytest.fail("must not execute")),
                 Stage("finalize", lambda a: pd.DataFrame()),
             ],
             entrypoint=ENTRYPOINT,
-            mode="sequential",
+            mode="notebook",
             image_analysis_results=entry.inputs(),
             targets={"0": "sample 0"},
         )

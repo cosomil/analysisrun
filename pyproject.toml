@@ -34,7 +34,14 @@ extend-select = ["S101"]
 "tests/**" = ["S101"]
 
 [tool.basedpyright]
-include = ["src/analysisrun/pipeline.py", "src/analysisrun/pipeline_parallel.py"]
+include = [
+    "src/analysisrun/pipeline.py",
+    "src/analysisrun/pipeline_worker.py",
+    "src/analysisrun/pipeline_entrypoint.py",
+    "src/analysisrun/context.py",
+    "src/analysisrun/input.py",
+    "src/analysisrun/output.py",
+]
 typeCheckingMode = "standard"
 pythonVersion = "3.13"
 reportMissingParameterType = "error"

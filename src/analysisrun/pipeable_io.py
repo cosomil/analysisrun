@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 
 from analysisrun.env import get_interactivity
 from analysisrun.helper import cowsay
-from analysisrun.interactive import VirtualFile
 from analysisrun.tar import TarEntryWriter, create_tar_from_dict
 
 
@@ -123,18 +122,16 @@ def exit_with_error(
 
     interactivity = get_interactivity()
 
-    # Jupyter notebook環境ではsys.exit()の使用を避けるため、例外をraiseして処理を中断させることとする。
-    # その際に例外情報が出力されるので、ここでは例外情報の出力を行わないこととする。
-    if exception is not None and interactivity != "notebook":
-        details = traceback.format_exception(exception)
-        _print("".join(details), stderr)
+    if exception is not None:
+        _print("".join(traceback.format_exception(exception)), stderr)
         stderr.flush()
 
     if interactivity is None:
         tar_data = create_tar_from_dict(ErrorResult(error=message).model_dump())
         _print(tar_data.getvalue(), stdout)
     else:
-        _print(cowsay(message), stdout)
+        _print(cowsay(message), stderr)
+        stderr.flush()
     stdout.flush()
 
     if interactivity == "notebook":
@@ -186,93 +183,3 @@ def exit_with_error_streaming(
     # sys.exit()を呼ぶ
     # SystemExitが発生し、with文の__exit__が呼ばれてTARがクローズされる
     sys.exit(code.value)
-
-
-class AnalysisInputModel[
-    Params: BaseModel,
-    ImageAnalysisResultsInput: BaseModel,
-](BaseModel):
-    """
-    分散実行時に使用される解析(analyze)の入力データモデル
-
-    `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
-    """
-
-    data_name: str = Field(description="解析対象のデータ名")
-    sample_name: str = Field(description="解析対象のサンプル名")
-    params: Params = Field(description="解析全体に関わるパラメータ")
-    preprocessed_data: VirtualFile | None = Field(
-        default=None,
-        description="前処理済みデータ（任意）",
-    )
-    image_analysis_results: ImageAnalysisResultsInput = Field(
-        description="画像解析結果CSVデータ"
-    )
-
-    model_config = {
-        "arbitrary_types_allowed": True,
-    }
-
-
-class AnalyzeSeqInputModel[
-    Params: BaseModel,
-    ImageAnalysisResultsInput: BaseModel,
-](BaseModel):
-    """
-    分散実行時に複数ターゲットの解析をシーケンシャルに実行する際の入力データモデル
-
-    `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
-
-    Examples
-    --------
-    >>> # 入力tar構造:
-    >>> {
-    ...     "targets": {"0001": "SampleA", "0002": "SampleB"},
-    ...     "params": {...},
-    ...     "image_analysis_results": {
-    ...         "activity_spots": BytesIO(...),
-    ...         "surrounding_spots": BytesIO(...),
-    ...     }
-    ... }
-    """
-
-    targets: dict[str, str] = Field(
-        description="解析対象データ情報。keyはdata_name、valueはsample_name"
-    )
-    params: Params = Field(description="解析全体に関わるパラメータ")
-    preprocessed_data: VirtualFile | None = Field(
-        default=None,
-        description="前処理済みデータ（任意）",
-    )
-    image_analysis_results: ImageAnalysisResultsInput = Field(
-        description="画像解析結果CSVデータ"
-    )
-
-    model_config = {
-        "arbitrary_types_allowed": True,
-    }
-
-
-class PostprocessInputModel[
-    Params: BaseModel,
-](BaseModel):
-    """
-    分散実行時に使用される後処理(postprocess)の入力データモデル
-
-    `read_tar_as_dict`で読み込まれた入力をバリデーションする際に使用される。
-    """
-
-    analysis_results: dict[str, VirtualFile] = Field(description="解析結果データセット")
-    preprocessed_data: VirtualFile | None = Field(
-        default=None,
-        description="前処理済みデータ（任意）",
-    )
-    params: Params = Field(description="解析全体に関わるパラメータ")
-
-    model_config = {
-        "arbitrary_types_allowed": True,
-    }
-
-
-def list_from_dict[V](d: dict[str, V]) -> list[V]:
-    return [v for k, v in sorted(d.items(), key=lambda kv: int(kv[0]))]

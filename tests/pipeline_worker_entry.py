@@ -16,9 +16,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from analysisrun import pipeline_parallel as transport
+from analysisrun import pipeline_worker as transport
 from analysisrun.pipeline import Stage
-from analysisrun.pipeline_parallel import execute_entrypoint
+from analysisrun.pipeline_entrypoint import execute_entrypoint
 
 
 class Inputs(NamedTuple):
@@ -86,7 +86,7 @@ def first(args):
     args.image_analysis_results.cells["score"] = -1
     args.image_analysis_results.spots["score"] = -1
     args.params["history"].append("mutated")
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker":
+    if os.environ.get("ANALYSISRUN_PROCESS_ROLE") == "parallel-worker":
         args.synthesized["history"].append("mutated")
     # Consecutive maps must not pickle this intermediate lambda.
     return {"get_score": lambda: score}
@@ -143,7 +143,7 @@ def third(args):
     directory = Path(args.params["directory"])
     if not (directory / "synthesize").exists() or args.synthesized["history"]:
         raise ValueError("invalid synthesized state")
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker":
+    if os.environ.get("ANALYSISRUN_PROCESS_ROLE") == "parallel-worker":
         args.synthesized["history"].append("mutated")
     # Parent must receive the first lane before the child can finish the next.
     if args.params.get("fault") == "ack" and args.data_name == "1":
@@ -175,9 +175,9 @@ def definition():
         Stage("map", third),
         Stage("finalize", finalize),
     ]
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker" and os.environ.get(
-        "TEST_MISMATCH"
-    ):
+    if os.environ.get(
+        "ANALYSISRUN_PROCESS_ROLE"
+    ) == "parallel-worker" and os.environ.get("TEST_MISMATCH"):
         stages[-1] = Stage("finalize", other)
     return tuple(stages)
 
@@ -215,13 +215,14 @@ def malformed_response(fault):
 
 def main():
     stages = definition()
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker":
+    if os.environ.get("ANALYSISRUN_PROCESS_ROLE") == "parallel-worker":
         if fault := os.environ.get("TEST_RESPONSE_FAULT"):
             malformed_response(fault)
         execute_entrypoint(stages, entrypoint=Path(__file__))
     execute_entrypoint(
         stages,
         entrypoint=Path(__file__),
+        mode=os.environ.get("TEST_EXECUTION_MODE"),
         params={
             "directory": os.environ["TEST_DIRECTORY"],
             "history": [],

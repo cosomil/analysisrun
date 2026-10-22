@@ -104,7 +104,7 @@ class ExecutionContext[P: BaseModel, I: NamedTupleLike[pd.DataFrame]]:
 map / synthesize は元入力を置換せず、読み取り専用として扱う。
 全体の中間値は `synthesized` が担い、必要なら先頭の synthesize で生成する。
 新 Pipeline の型・Args・状態・転送に `extra` / `ProcessedInputs` は導入しない。
-既存の `run_analysis_with_preprocess` の互換性のため、それらの既存型は残す。
+旧 API と専用型は #87 で削除する。互換レイヤーは残さない。
 Mapping の外側を保護しても DataFrame 等の内部まで immutable にはならないため、
 共有値の破壊的変更によってレーン間の結果を変える実装は契約外とする。
 
@@ -309,7 +309,5 @@ pickle 復元・バリア・Output・エラー集約の本実装の検証は含�
 - #86: 本メモの InitialPipeline / PipelineBuilder と Args のジェネリック検証、
   不正な preprocess の静的・実行時拒否を完成させる。両公開型の独立性、
   PipelineBuilder / Args の4要素型、ExecutionContext への改名・互換性を扱う。
-- #87: 既存 API の互換性を維持しつつ、新 Pipeline の前処理は変換後入力を直接返す
-  形式へ移行する。旧 API の extra を新状態へ暗黙に移さず、全体の中間値が必要なら
-  synthesize へ移す案を示す。対象欠損の検証も整備する。
-  既存の run_analysis 系 API は本変更では変更しない。
+- #87: 旧 API と重複状態を削除し、Pipeline に統一する。入力 NamedTuple は preprocess、
+  共有結果は synthesize、DataFrame 集約は finalize が担う。既存の外部入力形式は維持する。
