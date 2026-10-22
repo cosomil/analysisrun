@@ -62,7 +62,8 @@ Notebook では既存の `ManualInput` を `read_context()` に渡す。
 通常スクリプトでは親が入力を読み込み、map の区間を子プロセスで実行する。
 外部 TAR モードでは最終結果を送信して終了する。Notebook と通常スクリプトの
 `finalize()` は DataFrame を返す。`args.output(fig, name, image_type, **kwargs)` は
-既存の画像保存先・TAR 出力に接続する。
+Notebook では画面表示、対話端末ではファイル保存、外部 TAR モードでは TAR 出力を行う。
+Notebook の例外は元のまま伝播し、traceback の表示は Notebook に任せる。
 
 ## 型と前処理
 

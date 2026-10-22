@@ -64,17 +64,13 @@ def execute_entrypoint(
             raise ValueError("notebook execution requires inputs and targets")
         if output is None and any(stage.kind == "map" for stage in stages):
             raise ValueError("notebook map execution requires an Output")
-        try:
-            return execute_sequential(
-                stages,
-                params=params,
-                image_analysis_results=image_analysis_results,
-                targets=targets,
-                output=output if output is not None else _NullOutput(),
-            )
-        except Exception as exc:
-            _report_processing_error(exc, binary_stderr)
-            raise
+        return execute_sequential(
+            stages,
+            params=params,
+            image_analysis_results=image_analysis_results,
+            targets=targets,
+            output=output if output is not None else _NullOutput(),
+        )
     binary_stdout: IO[bytes] = stdout if stdout is not None else sys.stdout.buffer
     if mode not in {"interactive", "streaming"}:
         raise ValueError(f"unsupported pipeline mode: {mode!r}")

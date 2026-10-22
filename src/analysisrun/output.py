@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 class Output(Protocol):
     """
-    matplotlib.figure.Figureを保存する。
+    matplotlib.figure.Figureを実行環境に応じて表示・保存する。
 
     Parameters
     ----------
@@ -42,6 +42,17 @@ class _FileOutput(Output):
         fig.savefig(path, **kwargs)
         fig.clear()
         plt.close(fig)
+
+
+class _NotebookOutput(Output):
+    def __call__(
+        self, fig: fig.Figure, name: str, image_type: str, **kwargs: Any
+    ) -> None:
+        try:
+            plt.show(block=False)
+        finally:
+            fig.clear()
+            plt.close(fig)
 
 
 class _NullOutput(Output):

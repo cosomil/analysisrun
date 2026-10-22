@@ -121,6 +121,8 @@ def exit_with_error(
     """
 
     interactivity = get_interactivity()
+    if interactivity == "notebook":
+        raise exception or RuntimeError(message)
 
     if exception is not None:
         _print("".join(traceback.format_exception(exception)), stderr)
@@ -134,10 +136,7 @@ def exit_with_error(
         stderr.flush()
     stdout.flush()
 
-    if interactivity == "notebook":
-        raise exception or RuntimeError(message)
-    else:
-        sys.exit(code.value)
+    sys.exit(code.value)
 
 
 def exit_with_error_streaming(

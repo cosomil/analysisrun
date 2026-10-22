@@ -27,7 +27,7 @@ from .input import (
     create_image_analysis_results_input_model,
 )
 from .interactive import scan_model_input
-from .output import Output, _FileOutput, _NullOutput
+from .output import Output, _FileOutput, _NotebookOutput, _NullOutput
 from .pipeable_io import ExitCodes, exit_with_error
 from .tar import read_tar_as_dict
 from .typing import NamedTupleLike
@@ -198,7 +198,9 @@ def read_context[
 
     entrypoint = None
     output_impl: Output = _NullOutput()
-    if mode in {"notebook", "interactive"}:
+    if mode == "notebook":
+        output_impl = _NotebookOutput()
+    elif mode == "interactive":
         if output_dir_path is None:
             output_dir_path = _derive_output_dir(runtime_input.image_analysis_results)
         output_impl = _FileOutput(output_dir_path)

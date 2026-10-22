@@ -5,13 +5,16 @@ import os
 import subprocess
 import sys
 import tarfile
+import traceback
 from dataclasses import FrozenInstanceError
 from io import BytesIO
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, Never, cast
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+from matplotlib.figure import Figure
 
 from analysisrun import (
     ExecutionContext,
@@ -49,6 +52,108 @@ def context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         ),
         output_dir=tmp_path,
     )
+
+
+@pytest.mark.parametrize("stage", ["preprocess", "map", "synthesize", "finalize"])
+def test_notebook_stage_errors_propagate_without_duplicate_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stage: Literal["preprocess", "map", "synthesize", "finalize"],
+):
+    ctx = context(monkeypatch, tmp_path)
+    error = LookupError("notebook stage failure")
+
+    def fail(args: object) -> Never:
+        raise error
+
+    builder = ctx.pipeline()
+    if stage == "preprocess":
+        pipeline = builder.preprocess(fail)
+    elif stage == "map":
+        pipeline = builder.map(fail)
+    elif stage == "synthesize":
+        pipeline = builder.synthesize(fail)
+    else:
+        pipeline = builder
+    with pytest.raises(LookupError) as caught:
+        pipeline.finalize(
+            fail if stage == "finalize" else lambda args: pytest.fail("continued")
+        )
+    assert caught.value is error
+    assert traceback.extract_tb(error.__traceback__)[-1].name == "fail"
+    assert any(f"stage={stage} stage_index=0" in note for note in error.__notes__)
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize("fail_after_display", [False, True])
+def test_notebook_output_displays_without_saving_and_survives_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    fail_after_display: bool,
+):
+    output_dir = tmp_path / "images"
+    ctx = context(monkeypatch, output_dir)
+    figures: list[Figure] = []
+    shown: list[Figure] = []
+    open_figures = set(plt.get_fignums())
+    error = LookupError("failure after display")
+
+    def show(*, block: bool | None = None) -> None:
+        assert block is False
+        figure = figures[-1]
+        assert len(figure.axes) == 1
+        assert len(figure.axes[0].lines) == 1
+        shown.append(figure)
+
+    monkeypatch.setattr(plt, "show", show)
+    monkeypatch.setattr(
+        Figure, "savefig", lambda *args, **kwargs: pytest.fail("saved an image")
+    )
+
+    def mapping(args: MapArgs[Params, ImageResults, None, None]) -> int:
+        figure, ax = plt.subplots()
+        ax.plot([0, 1], [1, 2])
+        figures.append(figure)
+        args.output(figure, f"nested/{args.data_name}.png", "qc", format="png")
+        return len(args.image_analysis_results.activity_spots)
+
+    def finalize(
+        args: SynthesizeArgs[Params, ImageResults, int, None],
+    ) -> pd.DataFrame:
+        if fail_after_display:
+            raise error
+        return pd.DataFrame({"rows": list(args.values.values())})
+
+    pipeline = ctx.pipeline().map(mapping)
+    if fail_after_display:
+        with pytest.raises(LookupError) as caught:
+            pipeline.finalize(finalize)
+        assert caught.value is error
+    else:
+        result = pipeline.finalize(finalize)
+        assert result.rows.tolist() == [26, 24]
+    assert shown == figures
+    assert len(shown) == 2
+    assert all(not figure.axes for figure in figures)
+    assert set(plt.get_fignums()) == open_figures
+    assert not output_dir.exists()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_notebook_input_errors_propagate_without_duplicate_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    _force_interactivity(monkeypatch, "notebook")
+    with pytest.raises(RuntimeError, match="manual_input"):
+        read_context(Params, ImageResults, output_dir=tmp_path)
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
 
 
 def test_builders_are_lazy_immutable_and_reusable(

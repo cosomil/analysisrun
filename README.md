@@ -105,7 +105,7 @@ result.to_csv(project_root / "output" / "result.csv", index=False)
   レーンを伝達し、親で `TransferError` として通知します。転送・pickle 復元・非ゼロ終了の
   障害にも対象セグメント／レーンと子の stderr を含めます。
 - 非 TAR の端末実行では stderr に traceback、続いて処理種別・対象と問い合わせ案内の
-  cowsay を表示し、非ゼロ終了します。Notebook では元の例外を送出します。
+  cowsay を表示し、非ゼロ終了します。Notebook では元の例外を送出し、traceback の表示は Notebook に任せます。
 - 受理済みの value / synthesized と参照先への変更はロールバックしません。
   ローカル保存済み・Notebook 表示済み・TAR 送信済みの画像も残ります。
 - 外部 gzip TAR は `data_name/images/image_name` に画像を逐次送信します。
@@ -135,7 +135,7 @@ preprocess は定義の先頭で最大一度だけ設定でき、finalize の実
 
 ### 実行モード
 
-- `notebook`: Notebook 内で逐次実行し DataFrame を返す。ManualInput が必須。
+- `notebook`: Notebook 内で逐次実行し DataFrame を返す。画像は Notebook 上に表示する。ManualInput が必須。
 - `interactive`: TTY 端末で map を Worker により並列実行し DataFrame を返す。
   ManualInput があれば入力プロンプトは出さない。画像はファイルへ保存する。
 - `streaming`: 非 TTY の stdin から TAR を読み、stdout へ gzip TAR を送って終了する。

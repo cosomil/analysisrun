@@ -29,7 +29,7 @@ def test_redirect_stdout_to_stderr():
 
 
 @pytest.mark.parametrize("interactivity", ["notebook", "terminal"])
-def test_human_input_errors_use_stderr_traceback_then_cowsay(
+def test_input_error_reporting_matches_environment(
     monkeypatch: pytest.MonkeyPatch,
     interactivity: Literal["notebook", "terminal"] | None,
 ):
@@ -50,11 +50,12 @@ def test_human_input_errors_use_stderr_traceback_then_cowsay(
         )
     if interactivity == "notebook":
         assert caught.value is error
+        assert stderr.getvalue() == b""
     else:
         assert isinstance(caught.value, SystemExit)
         assert caught.value.code == 2
+        diagnostics = stderr.getvalue().decode()
+        assert diagnostics.index("ValueError: input failure") < diagnostics.index(
+            "friendly message"
+        )
     assert stdout.getvalue() == b""
-    diagnostics = stderr.getvalue().decode()
-    assert diagnostics.index("ValueError: input failure") < diagnostics.index(
-        "friendly message"
-    )
