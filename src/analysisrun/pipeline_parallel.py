@@ -733,7 +733,7 @@ def execute_entrypoint(
     stdout: BinaryIO | None = None,
     stderr: BinaryIO | None = None,
 ) -> pd.DataFrame:
-    """Internal execution entrance, pending the public builder in #86.
+    """Execution entrance shared by public builders and internal callers.
 
     Reconstruct stages before calling this in both parent and worker. Worker
     dispatch precedes input loading by the caller; no parent inputs are required.
