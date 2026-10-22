@@ -1,5 +1,6 @@
 """Public API examples checked by basedpyright, never executed."""
 
+from collections.abc import Mapping
 from typing import NamedTuple, assert_type
 
 import pandas as pd
@@ -14,6 +15,8 @@ from analysisrun import (
     SynthesizeArgs,
     read_context,
 )
+from analysisrun.pipeline import DataFrameInputSnapshot, Lane, dataframe_snapshot
+from analysisrun.pipeline_worker import file_snapshot
 
 
 class Params(BaseModel):
@@ -93,3 +96,14 @@ def check() -> None:
         .finalize(to_dataframe)
     )
     assert_type(result, pd.DataFrame)
+
+
+def check_snapshot_input_types(inputs: Prepared, lanes: tuple[Lane, ...]) -> None:
+    snapshot = DataFrameInputSnapshot(inputs, lanes)
+    assert_type(snapshot.restore(0), Prepared)
+    assert_type(snapshot.restore_all(), Mapping[str, Prepared])
+    with dataframe_snapshot(inputs, lanes) as memory:
+        assert_type(memory.restore(0), Prepared)
+    with file_snapshot(inputs, lanes) as files:
+        assert_type(files.restore(0), Prepared)
+        assert_type(files.restore_all(), Mapping[str, Prepared])

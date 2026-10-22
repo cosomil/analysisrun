@@ -123,24 +123,24 @@ def canonical_manifest(stages: Sequence[Stage]) -> str:
     )
 
 
-class FileInputSnapshot:
+class FileInputSnapshot[I: Inputs]:
     def __init__(self, lanes: tuple[Lane, ...], paths: Mapping[int, Path]) -> None:
         self.lanes = lanes
         self.paths = MappingProxyType(dict(paths))
 
-    def restore(self, lane_id: int) -> Inputs:
+    def restore(self, lane_id: int) -> I:
         return pickle.loads(self.paths[lane_id].read_bytes())
 
-    def restore_all(self) -> Mapping[str, Inputs]:
+    def restore_all(self) -> Mapping[str, I]:
         return MappingProxyType(
             {lane.data_name: self.restore(lane.lane_id) for lane in self.lanes}
         )
 
 
 @contextmanager
-def file_snapshot(
-    inputs: Inputs, lanes: tuple[Lane, ...]
-) -> Iterator[FileInputSnapshot]:
+def file_snapshot[I: Inputs](
+    inputs: I, lanes: tuple[Lane, ...]
+) -> Iterator[FileInputSnapshot[I]]:
     with TemporaryDirectory(prefix="analysisrun-pipeline-") as directory:
         source = DataFrameInputSnapshot(inputs, lanes)
         paths = {}
@@ -154,7 +154,7 @@ def file_snapshot(
             )
             paths[lane.lane_id] = path
         del source
-        yield FileInputSnapshot(lanes, paths)
+        yield FileInputSnapshot[I](lanes, paths)
 
 
 def worker_limit() -> int:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -6,6 +8,7 @@ import tarfile
 from dataclasses import FrozenInstanceError
 from io import BytesIO
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -14,12 +17,16 @@ from analysisrun import (
     ExecutionContext,
     InitialPipeline,
     ManualInput,
+    MapArgs,
     PipelineBuilder,
+    PreprocessArgs,
+    SynthesizeArgs,
     read_context,
 )
 from analysisrun import (
     context as context_module,
 )
+from tests.support import read_tar_member
 from tests.test_input import (
     IMAGE_ANALYSIS_RESULT_CSV,
     SAMPLES_CSV,
@@ -30,7 +37,7 @@ from tests.test_input import (
 )
 
 
-def context(monkeypatch, tmp_path):
+def context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     _force_interactivity(monkeypatch, "notebook")
     return read_context(
         Params,
@@ -44,7 +51,9 @@ def context(monkeypatch, tmp_path):
     )
 
 
-def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
+def test_builders_are_lazy_immutable_and_reusable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     ctx = context(monkeypatch, tmp_path)
     assert isinstance(ctx, ExecutionContext)
     initial = ctx.pipeline()
@@ -52,11 +61,11 @@ def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
     assert not isinstance(initial, PipelineBuilder)
     calls = []
 
-    def prepare(args):
+    def prepare(args: PreprocessArgs[Params, ImageResults]) -> ImageResults:
         calls.append("prepare")
         return args.image_analysis_results
 
-    def mapping(args):
+    def mapping(args: MapArgs[Params, ImageResults, None, None]) -> int:
         assert args.value is args.synthesized is None
         return args.params.threshold
 
@@ -64,7 +73,7 @@ def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
     other = initial.synthesize(lambda a: 3)
     assert calls == []
     with pytest.raises(FrozenInstanceError):
-        branch._stages = ()
+        type(branch).__setattr__(branch, "_stages", ())
     for builder in [initial.preprocess(prepare), initial.map(mapping), other]:
         with pytest.raises(AttributeError):
             builder.preprocess(prepare)
@@ -81,10 +90,12 @@ def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
         lambda a: pd.DataFrame({"v": list(a.values.values())})
     ).v.tolist() == [None, None]
     with pytest.raises(TypeError, match="finalize must return"):
-        initial.finalize(lambda a: 1)
+        initial.finalize(cast(Any, lambda a: 1))
 
 
-def test_public_pipeline_consecutive_stages(monkeypatch, tmp_path):
+def test_public_pipeline_consecutive_stages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     ctx = context(monkeypatch, tmp_path)
     result = (
         ctx.pipeline()
@@ -105,7 +116,9 @@ def test_public_pipeline_consecutive_stages(monkeypatch, tmp_path):
     assert result.v.tolist() == [3, 3]
 
 
-def test_worker_read_context_skips_all_parent_input_loading(monkeypatch):
+def test_worker_read_context_skips_all_parent_input_loading(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv("ANALYSISRUN_PROCESS_ROLE", "parallel-worker")
     monkeypatch.setattr(
         context_module,
@@ -121,7 +134,9 @@ def test_worker_read_context_skips_all_parent_input_loading(monkeypatch):
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("preprocess", [False, True])
-def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
+def test_public_entrypoint_end_to_end(
+    tmp_path: Path, streaming: bool, preprocess: bool
+):
     env = {**os.environ, "TEST_OUTPUT": str(tmp_path), "ANALYSISRUN_MAX_WORKERS": "2"}
     env["TEST_PREPROCESS"] = str(int(preprocess))
     env.pop("ANALYSISRUN_MODE", None)
@@ -147,7 +162,7 @@ def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
     if streaming:
         with tarfile.open(fileobj=BytesIO(completed.stdout), mode="r:gz") as archive:
             entries = {
-                member.name: archive.extractfile(member).read()
+                member.name: read_tar_member(archive, member)
                 for member in archive
                 if member.isfile()
             }
@@ -164,7 +179,9 @@ def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
         assert (tmp_path / "0001.png").exists()
 
 
-def test_preprocess_example_aggregation_matches_expected_output(monkeypatch, tmp_path):
+def test_preprocess_example_aggregation_matches_expected_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     from example.preprocess import __main__ as example
 
     _force_interactivity(monkeypatch, "notebook")
@@ -190,7 +207,7 @@ def test_preprocess_example_aggregation_matches_expected_output(monkeypatch, tmp
 
 
 def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
-    monkeypatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     from typing import NamedTuple
 
@@ -200,7 +217,8 @@ def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
     _force_interactivity(monkeypatch, "notebook")
     calls = []
 
-    def cleanse(data):
+    def cleanse(data: pd.DataFrame | CleansedData):
+        data = data if isinstance(data, pd.DataFrame) else data._data
         calls.append("cleanse")
         return CleansedData(data.loc[data.Entity == "Activity Spots"])
 
@@ -222,7 +240,7 @@ def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
     )
     assert calls == ["cleanse"]
 
-    def prepare(args):
+    def prepare(args: PreprocessArgs[Params, Source]) -> Prepared:
         calls.append("preprocess")
         return Prepared(
             args.image_analysis_results.activity_spots.drop(columns=["Entity"]).assign(
@@ -230,7 +248,7 @@ def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
             )
         )
 
-    def mapping(args):
+    def mapping(args: MapArgs[Params, Prepared, None, int]) -> dict[str, str | int]:
         assert args.image_analysis_results.renamed.Value.eq(1).all()
         assert args.synthesized == 50
         return {
@@ -238,14 +256,16 @@ def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
             "rows": len(args.image_analysis_results.renamed),
         }
 
-    def shared(args):
+    def shared[V, S](args: SynthesizeArgs[Params, Prepared, V, S]) -> int:
         assert all(
             "Entity" not in value.renamed
             for value in args.image_analysis_results.values()
         )
         return sum(len(value.renamed) for value in args.image_analysis_results.values())
 
-    def finalize(args):
+    def finalize(
+        args: SynthesizeArgs[Params, Prepared, dict[str, str | int], int],
+    ) -> pd.DataFrame:
         assert shared(args) == args.synthesized == 50
         return pd.DataFrame(args.values.values())
 
@@ -261,4 +281,5 @@ def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
         {"data": "0000", "rows": 26},
         {"data": "0001", "rows": 24},
     ]
+    assert ctx.image_analysis_results is not None
     assert "Entity" in ctx.image_analysis_results.activity_spots

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gzip
 import json
 import os
@@ -5,14 +7,20 @@ import pickle
 import subprocess
 import sys
 import tarfile
-from io import BytesIO
+from collections.abc import Callable
+from io import BufferedReader, BytesIO
 from pathlib import Path
 from threading import get_ident
+from typing import Any, BinaryIO, cast
 
 import pandas as pd
 import pytest
+from matplotlib.figure import Figure
 
+from analysisrun import MapArgs, PreprocessArgs, SynthesizeArgs
 from analysisrun import pipeline_worker as p
+from analysisrun.env import ExecutionMode
+from analysisrun.output import _NullOutput
 from analysisrun.pipeline import (
     Lane,
     MapExecutionContext,
@@ -22,12 +30,14 @@ from analysisrun.pipeline import (
     execute_sequential,
 )
 from analysisrun.pipeline_entrypoint import execute_entrypoint
+from analysisrun.pipeline_worker import ImageSink
 from tests import pipeline_worker_entry as entry
+from tests.support import read_tar_member
 
 ENTRYPOINT = Path(entry.__file__)
 
 
-def params(directory, fault=""):
+def params(directory: Path, fault: str = "") -> dict[str, Any]:
     return {"directory": str(directory), "history": [], "fault": fault}
 
 
@@ -35,7 +45,13 @@ def targets():
     return {str(i): f"sample {i}" for i in range(4)}
 
 
-def run(directory, fault="", on_image=None, on_value=None, max_workers=2):
+def run(
+    directory: Path,
+    fault: str = "",
+    on_image: ImageSink | None = None,
+    on_value: Callable[[MapSegment, MapExecutionContext, int, Any], None] | None = None,
+    max_workers: int = 2,
+):
     stages = entry.definition()
     executor = p.MultiprocessMapExecutor(
         stages,
@@ -45,12 +61,17 @@ def run(directory, fault="", on_image=None, on_value=None, max_workers=2):
         queue_size=1,
     )
     if on_value:
+        observer = on_value
         execute = executor.execute
 
-        def observed(segment, context, callback):
-            def notify(lane_id, value):
-                callback(lane_id, value)
-                on_value(segment, context, lane_id, value)
+        def observed(
+            segment: MapSegment,
+            context: MapExecutionContext,
+            on_value: Callable[[int, Any], None],
+        ):
+            def notify(lane_id: int, value: Any):
+                on_value(lane_id, value)
+                observer(segment, context, lane_id, value)
 
             execute(segment, context, notify)
 
@@ -60,18 +81,18 @@ def run(directory, fault="", on_image=None, on_value=None, max_workers=2):
         params=params(directory, fault),
         image_analysis_results=entry.inputs(),
         targets=targets(),
-        output=None,
+        output=_NullOutput(),
         map_executor=executor,
         snapshot_factory=p.file_snapshot,
     )
 
 
-def track_children(monkeypatch):
-    processes = []
+def track_children(monkeypatch: pytest.MonkeyPatch):
+    processes: list[subprocess.Popen[bytes]] = []
     original = p.subprocess.Popen
 
-    def popen(*args, **kwargs):
-        proc = original(*args, **kwargs)
+    def popen(*args: Any, **kwargs: Any):
+        proc = cast("subprocess.Popen[bytes]", original(*args, **kwargs))
         processes.append(proc)
         return proc
 
@@ -79,18 +100,23 @@ def track_children(monkeypatch):
     return processes
 
 
-def test_parallel_segments_equivalent_and_reaped(tmp_path, monkeypatch):
+def test_parallel_segments_equivalent_and_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     processes = track_children(monkeypatch)
     thread_id = get_ident()
     images = []
     snapshots = []
 
-    def on_image(*image):
+    def on_image(*image: Any):
         assert get_ident() == thread_id
         images.append(image)
 
-    def on_value(segment, context, lane_id, value):
+    def on_value(
+        segment: MapSegment, context: MapExecutionContext, lane_id: int, value: Any
+    ):
         assert get_ident() == thread_id
+        assert isinstance(context.snapshot, p.FileInputSnapshot)
         snapshots.append(tuple(context.snapshot.paths.values()))
         assert all(path.exists() for path in context.snapshot.paths.values())
 
@@ -107,7 +133,7 @@ def test_parallel_segments_equivalent_and_reaped(tmp_path, monkeypatch):
     sequential_dir = tmp_path / "notebook"
     sequential_dir.mkdir()
 
-    def discard(fig, *args, **kwargs):
+    def discard(fig: Figure, *args: Any, **kwargs: Any):
         entry.plt.close(fig)
 
     expected = execute_sequential(
@@ -120,8 +146,10 @@ def test_parallel_segments_equivalent_and_reaped(tmp_path, monkeypatch):
     pd.testing.assert_frame_equal(result, expected)
 
 
-def test_value_notified_before_worker_finishes(tmp_path):
-    def on_value(segment, context, lane_id, value):
+def test_value_notified_before_worker_finishes(tmp_path: Path):
+    def on_value(
+        segment: MapSegment, context: MapExecutionContext, lane_id: int, value: Any
+    ):
         if segment.start == 5 and lane_id == 0:
             assert context.values["0"] == value
             (tmp_path / "ack-0").touch()
@@ -130,7 +158,9 @@ def test_value_notified_before_worker_finishes(tmp_path):
 
 
 @pytest.mark.parametrize("fault", ["fail-peer", "kill-peer", "output-fail"])
-def test_failure_reaps_all_and_stops_progress(tmp_path, monkeypatch, fault):
+def test_failure_reaps_all_and_stops_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+):
     processes = track_children(monkeypatch)
     paths = []
     original = p.file_snapshot
@@ -138,7 +168,7 @@ def test_failure_reaps_all_and_stops_progress(tmp_path, monkeypatch, fault):
     from contextlib import contextmanager
 
     @contextmanager
-    def snapshot(*args):
+    def snapshot(*args: Any):
         with original(*args) as snap:
             paths.extend(snap.paths.values())
             try:
@@ -149,7 +179,7 @@ def test_failure_reaps_all_and_stops_progress(tmp_path, monkeypatch, fault):
 
     monkeypatch.setattr(p, "file_snapshot", snapshot)
 
-    def on_image(*args):
+    def on_image(*args: Any):
         if fault == "output-fail":
             raise RuntimeError("output failed")
 
@@ -162,25 +192,27 @@ def test_failure_reaps_all_and_stops_progress(tmp_path, monkeypatch, fault):
     assert not (tmp_path / "finalize").exists()
 
 
-def test_manifest_checks_parent_stages_before_maps(tmp_path, monkeypatch):
+def test_manifest_checks_parent_stages_before_maps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setenv("TEST_MISMATCH", "1")
     with pytest.raises(p.TransferError, match="pipeline manifest mismatch"):
         run(tmp_path)
     assert not list(tmp_path.glob("started-*"))
 
 
-def test_large_stderr_is_drained(tmp_path):
+def test_large_stderr_is_drained(tmp_path: Path):
     assert len(run(tmp_path, "stderr")) == 4
 
 
 @pytest.mark.parametrize("setting", ["", "0", "-1", "x", "1.5", " 2", "２"])
-def test_worker_limit_invalid(monkeypatch, setting):
+def test_worker_limit_invalid(monkeypatch: pytest.MonkeyPatch, setting: str):
     monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", setting)
     with pytest.raises(ValueError, match="positive integer"):
         p.worker_limit()
 
 
-def test_worker_limit_default_and_split(monkeypatch):
+def test_worker_limit_default_and_split(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ANALYSISRUN_MAX_WORKERS", raising=False)
     monkeypatch.setattr(p.os, "process_cpu_count", lambda: None)
     assert p.worker_limit() == 1
@@ -194,7 +226,7 @@ def test_worker_limit_default_and_split(monkeypatch):
     assert p._split_evenly_in_order([1], 4) == [[1]]
 
 
-def archive(entries):
+def archive(entries: list[tuple[str, bytes]]):
     stream = BytesIO()
     with p.writing_tar(stream) as tar:
         for name, data in entries:
@@ -202,9 +234,18 @@ def archive(entries):
     return stream.getvalue()
 
 
-def request():
+def request() -> p.WorkerRequest:
     return {
-        "lanes": [{"lane_id": 0, "data_name": "../日本語"}],
+        "protocol_version": 1,
+        "manifest": "",
+        "lanes": [
+            {
+                "lane_id": 0,
+                "data_name": "../日本語",
+                "sample_name": "sample",
+                "input_path": "unused",
+            }
+        ],
         "stage_start": 2,
         "stage_end": 4,
     }
@@ -221,13 +262,13 @@ def request():
         ([("error.json", b'{"protocol_version":1,"message":"failed"}')], "failed"),
     ],
 )
-def test_invalid_response(entries, match):
+def test_invalid_response(entries: list[tuple[str, bytes]], match: str):
     with pytest.raises(p.TransferError, match=match):
         p.receive_response(BytesIO(archive(entries)), request(), lambda *args: None)
 
 
 @pytest.mark.parametrize("cut", [512, 1024, 10240])
-def test_truncated_response(cut):
+def test_truncated_response(cut: int):
     data = archive([("lanes/0/value.pkl", pickle.dumps(None))])
     with pytest.raises((p.TransferError, tarfile.TarError)):
         p.receive_response(
@@ -235,7 +276,7 @@ def test_truncated_response(cut):
         )
 
 
-def test_file_snapshot_types_isolation_and_cleanup(tmp_path):
+def test_file_snapshot_types_isolation_and_cleanup(tmp_path: Path):
     lanes = tuple(Lane(i, str(i), str(i)) for i in range(4))
     with p.file_snapshot(entry.inputs(), lanes) as snapshot:
         paths = list(snapshot.paths.values())
@@ -248,8 +289,10 @@ def test_file_snapshot_types_isolation_and_cleanup(tmp_path):
 
 
 @pytest.mark.parametrize("field", ["params", "synthesized", "value"])
-def test_pickle_failure_precedes_children(tmp_path, monkeypatch, field):
-    def forbidden(*args, **kwargs):
+def test_pickle_failure_precedes_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+):
+    def forbidden(*args: Any, **kwargs: Any):
         pytest.fail("must not spawn")
 
     monkeypatch.setattr(p.subprocess, "Popen", forbidden)
@@ -264,13 +307,13 @@ def test_pickle_failure_precedes_children(tmp_path, monkeypatch, field):
             bad if field == "params" else {},
             {"0": bad if field == "value" else None},
             bad if field == "synthesized" else None,
-            None,
+            _NullOutput(),
         )
         with pytest.raises(p.TransferError, match=f"cannot pickle {field}"):
             executor.execute(MapSegment(0, 1, stages[:1]), context, lambda *args: None)
 
 
-def test_zero_lanes_no_spawn(tmp_path, monkeypatch):
+def test_zero_lanes_no_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(p.subprocess, "Popen", lambda *a, **k: pytest.fail("no spawn"))
     stages = (Stage("map", entry.third), Stage("finalize", entry.finalize))
     result = execute_pipeline(
@@ -278,7 +321,7 @@ def test_zero_lanes_no_spawn(tmp_path, monkeypatch):
         params=params(tmp_path),
         image_analysis_results=entry.inputs(),
         targets={},
-        output=None,
+        output=_NullOutput(),
         snapshot_factory=p.file_snapshot,
         map_executor=p.MultiprocessMapExecutor(stages, ENTRYPOINT, lambda *a: None),
     )
@@ -286,7 +329,7 @@ def test_zero_lanes_no_spawn(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("fault", ["", "fail-peer", "fail-after-image"])
-def test_external_streaming_contract(tmp_path, fault):
+def test_external_streaming_contract(tmp_path: Path, fault: str):
     proc = subprocess.run(
         [sys.executable, str(ENTRYPOINT)],
         capture_output=True,
@@ -305,7 +348,7 @@ def test_external_streaming_contract(tmp_path, fault):
         if fault:
             assert proc.returncode != 0
             assert names[-1] == "error"
-            assert "injected map failure" in tar.extractfile("error").read().decode()
+            assert "injected map failure" in read_tar_member(tar, "error").decode()
             assert "result_csv" not in names
             if fault == "fail-after-image":
                 assert any("/images/" in name for name in names)
@@ -313,11 +356,13 @@ def test_external_streaming_contract(tmp_path, fault):
             assert proc.returncode == 0, proc.stderr.decode()
             assert "result_csv" in names
             assert len([name for name in names if "/images/" in name]) == 4
-            assert json.loads(tar.extractfile("0/result_json").read())["score"] == "112"
+            assert json.loads(read_tar_member(tar, "0/result_json"))["score"] == "112"
     assert gzip.decompress(proc.stdout)[-1024:] == bytes(1024)
 
 
-def test_parallel_entrypoint_returns_frame_and_saves_images(tmp_path, monkeypatch):
+def test_parallel_entrypoint_returns_frame_and_saves_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", "2")
     result = execute_entrypoint(
         entry.definition(),
@@ -335,7 +380,7 @@ def test_parallel_entrypoint_returns_frame_and_saves_images(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     "field", ["protocol_version", "stage_start", "stage_end", "lanes"]
 )
-def test_worker_rejects_invalid_requests_before_map(field):
+def test_worker_rejects_invalid_requests_before_map(field: str):
     stages = entry.definition()
     req = {
         "protocol_version": 1,
@@ -368,12 +413,14 @@ def test_worker_rejects_invalid_requests_before_map(field):
     assert status == 1
     with tarfile.open(fileobj=BytesIO(response.getvalue())) as tar:
         assert tar.getnames() == ["error.json"]
-        error = json.loads(tar.extractfile("error.json").read())
+        error = json.loads(read_tar_member(tar, "error.json"))
         assert error["stage_index"] is None
     assert response.getvalue()[-1024:] == bytes(1024)
 
 
-def test_notebook_entrance_avoids_binary_stdout_and_pickle(tmp_path, monkeypatch):
+def test_notebook_entrance_avoids_binary_stdout_and_pickle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     from io import StringIO
 
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
@@ -398,18 +445,20 @@ def test_error_archive_closed_on_system_exit():
     assert stream.getvalue()[-1024:] == bytes(1024)
 
 
-def test_input_pickle_failure_cleans_snapshot_directory(monkeypatch):
+def test_input_pickle_failure_cleans_snapshot_directory(
+    monkeypatch: pytest.MonkeyPatch,
+):
     directories = []
     original = p.TemporaryDirectory
 
-    def temporary(*args, **kwargs):
+    def temporary(*args: Any, **kwargs: Any):
         directory = original(*args, **kwargs)
         directories.append(Path(directory.name))
         return directory
 
     monkeypatch.setattr(p, "TemporaryDirectory", temporary)
     inputs = entry.inputs()
-    inputs.cells["object"] = [lambda: None] * 4
+    inputs.cells["object"] = pd.Series([lambda: None] * 4, dtype=object)
     with (
         pytest.raises(p.TransferError, match="cannot pickle input lane_id=0"),
         p.file_snapshot(inputs, (Lane(0, "0", "sample"),)),
@@ -430,16 +479,18 @@ def test_input_pickle_failure_cleans_snapshot_directory(monkeypatch):
     ],
 )
 def test_bad_worker_response_retains_received_values_and_blocks_barrier(
-    tmp_path,
-    monkeypatch,
-    fault,
-    match,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    match: str,
 ):
     processes = track_children(monkeypatch)
     monkeypatch.setenv("TEST_RESPONSE_FAULT", fault)
     values = {}
 
-    def on_value(segment, context, lane_id, value):
+    def on_value(
+        segment: MapSegment, context: MapExecutionContext, lane_id: int, value: Any
+    ):
         values[lane_id] = value
 
     with pytest.raises(p.TransferError, match=match):
@@ -457,17 +508,19 @@ def test_truncation_inside_zero_payload_cannot_fake_end_markers():
         p._read_entries(BytesIO(data), lambda *args: None)
 
 
-def test_images_arrive_before_worker_can_complete(tmp_path):
-    def on_image(data_name, *args):
+def test_images_arrive_before_worker_can_complete(tmp_path: Path):
+    def on_image(data_name: str, *args: Any):
         (tmp_path / f"imageack-{data_name}").touch()
 
     assert len(run(tmp_path, "image-ack", on_image=on_image)) == 4
 
 
-def test_on_value_failure_stops_and_reaps(tmp_path, monkeypatch):
+def test_on_value_failure_stops_and_reaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     processes = track_children(monkeypatch)
 
-    def on_value(*args):
+    def on_value(*args: Any):
         raise RuntimeError("callback failed")
 
     with pytest.raises(RuntimeError, match="callback failed"):
@@ -490,7 +543,9 @@ def test_on_value_failure_stops_and_reaps(tmp_path, monkeypatch):
         ("common-image", None),
     ],
 )
-def test_streaming_failures_and_unique_names(tmp_path, fault, message):
+def test_streaming_failures_and_unique_names(
+    tmp_path: Path, fault: str, message: str | None
+):
     proc = subprocess.run(
         [sys.executable, str(ENTRYPOINT)],
         capture_output=True,
@@ -510,7 +565,7 @@ def test_streaming_failures_and_unique_names(tmp_path, fault, message):
         if message:
             assert proc.returncode != 0
             assert names[-1] == "error"
-            assert message in tar.extractfile("error").read().decode()
+            assert message in read_tar_member(tar, "error").decode()
             assert b"^__^" not in proc.stdout
             if fault != "preprocess":
                 assert any("/images/" in name for name in names)
@@ -538,7 +593,7 @@ def test_streaming_failures_and_unique_names(tmp_path, fault, message):
         ("finalize", "finalize"),
     ],
 )
-def test_terminal_failure_traceback_then_cowsay(tmp_path, fault, kind):
+def test_terminal_failure_traceback_then_cowsay(tmp_path: Path, fault: str, kind: str):
     proc = subprocess.run(
         [sys.executable, str(ENTRYPOINT)],
         capture_output=True,
@@ -566,7 +621,9 @@ def test_terminal_failure_traceback_then_cowsay(tmp_path, fault, kind):
         assert (tmp_path / "images" / "lane-0.png").exists()
 
 
-def test_local_same_image_name_overwrites_across_lanes(tmp_path, monkeypatch):
+def test_local_same_image_name_overwrites_across_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", "1")
     result = execute_entrypoint(
         entry.definition(),
@@ -582,7 +639,7 @@ def test_local_same_image_name_overwrites_across_lanes(tmp_path, monkeypatch):
     assert (tmp_path / "images" / "common.png").read_bytes().startswith(b"\x89PNG")
 
 
-def test_gzip_images_are_readable_before_pipeline_finishes(tmp_path):
+def test_gzip_images_are_readable_before_pipeline_finishes(tmp_path: Path):
     from threading import Thread
 
     proc = subprocess.Popen(
@@ -597,16 +654,20 @@ def test_gzip_images_are_readable_before_pipeline_finishes(tmp_path):
             "TEST_FAULT": "image-ack",
         },
     )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
     images, errors = [], []
 
     def consume():
         try:
             with (
-                gzip.GzipFile(fileobj=proc.stdout.raw) as compressed,
+                gzip.GzipFile(
+                    fileobj=cast(BinaryIO, cast(BufferedReader, proc.stdout).raw)
+                ) as compressed,
                 tarfile.open(fileobj=compressed, mode="r|", bufsize=512) as tar,
             ):
                 for member in tar:
-                    data = tar.extractfile(member).read()
+                    data = read_tar_member(tar, member)
                     if "/images/" in member.name:
                         assert proc.poll() is None
                         assert data.startswith(b"\x89PNG")
@@ -631,7 +692,7 @@ def test_gzip_images_are_readable_before_pipeline_finishes(tmp_path):
     assert images == list(targets())
 
 
-def test_worker_failure_reports_exact_stage_lane_sample_and_stderr(tmp_path):
+def test_worker_failure_reports_exact_stage_lane_sample_and_stderr(tmp_path: Path):
     with pytest.raises(p.TransferError) as caught:
         run(tmp_path, "fail-after-image", max_workers=1)
     message = str(caught.value)
@@ -649,7 +710,7 @@ def test_worker_failure_reports_exact_stage_lane_sample_and_stderr(tmp_path):
 
 
 @pytest.mark.parametrize("field", ["input", "params", "synthesized", "value"])
-def test_worker_deserialization_failure_has_lane_context(tmp_path, field):
+def test_worker_deserialization_failure_has_lane_context(tmp_path: Path, field: str):
     stages = entry.definition()
     path = tmp_path / "input.pkl"
     path.write_bytes(b"broken" if field == "input" else pickle.dumps(entry.inputs()))
@@ -685,7 +746,7 @@ def test_worker_deserialization_failure_has_lane_context(tmp_path, field):
     assert p.run_worker(stages, BytesIO(data), response) == 1
     with tarfile.open(fileobj=BytesIO(response.getvalue())) as tar:
         assert tar.getnames() == ["error.json"]
-        error = json.loads(tar.extractfile("error.json").read())
+        error = json.loads(read_tar_member(tar, "error.json"))
         assert error["error_type"] == "UnpicklingError"
         assert error["lane_id"] == 0
         assert error["data_name"] == "0"
@@ -695,22 +756,28 @@ def test_worker_deserialization_failure_has_lane_context(tmp_path, field):
     assert response.getvalue()[-1024:] == bytes(1024)
 
 
-def test_notebook_output_and_original_failure_are_preserved(tmp_path, monkeypatch):
+def test_notebook_output_and_original_failure_are_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.setenv("ANALYSISRUN_INTERACTIVITY", "notebook")
     monkeypatch.setattr(p.pickle, "dumps", lambda *a: pytest.fail("no pickle"))
     shown = []
     error = LookupError("notebook failure")
 
-    def display(fig, name, image_type, **kwargs):
+    def display(fig: Figure, name: str, image_type: str, **kwargs: Any):
         assert kwargs == {"format": "png"}
         shown.append((fig, name, image_type))
         entry.plt.close(fig)
 
-    def mapping(args):
+    def mapping(args: MapArgs[Any, Any, Any, Any]):
         entry.emit_image(args)
 
-    def fail(args):
+    def fail(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         raise error
 
     with pytest.raises(LookupError) as caught:
@@ -763,7 +830,7 @@ def test_tar_adapters_borrow_streams_and_reject_unsupported_operations():
 
 
 @pytest.mark.parametrize("mode", ["notebook", "interactive"])
-def test_entrypoint_requires_parent_inputs_but_not_for_worker(mode):
+def test_entrypoint_requires_parent_inputs_but_not_for_worker(mode: ExecutionMode):
     with pytest.raises(ValueError, match="requires inputs and targets"):
         execute_entrypoint(
             [Stage("finalize", lambda a: pytest.fail("must not execute"))],
@@ -789,7 +856,7 @@ def test_sequential_entrypoint_requires_output_for_maps():
 def test_receive_response_keeps_positional_callback_contract():
     events = []
 
-    def receive(kind, lane_id, payload):
+    def receive(kind: str, lane_id: int, payload: Any):
         events.append((kind, lane_id, payload))
 
     data = archive(

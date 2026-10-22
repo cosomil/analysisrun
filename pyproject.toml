@@ -34,14 +34,9 @@ extend-select = ["S101"]
 "tests/**" = ["S101"]
 
 [tool.basedpyright]
-include = [
-    "src/analysisrun/pipeline.py",
-    "src/analysisrun/pipeline_worker.py",
-    "src/analysisrun/pipeline_entrypoint.py",
-    "src/analysisrun/context.py",
-    "src/analysisrun/input.py",
-    "src/analysisrun/output.py",
-]
+include = ["."]
+# 意図的な型エラーは tests/test_pipeline_typing.py で診断内容を検証する。
+exclude = [".venv", "tests/typing/pipeline_invalid.py"]
 typeCheckingMode = "standard"
 pythonVersion = "3.13"
 reportMissingParameterType = "error"

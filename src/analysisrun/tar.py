@@ -88,7 +88,7 @@ def _encode_to_tar(tar: tarfile.TarFile, prefix: str | None, data: dict[str, Any
         full_name = f"{prefix}/{name}" if prefix else name
 
         # 値をバイト列に変換
-        pax_headers: dict | None = None
+        pax_headers: dict[str, str] | None = None
         if isinstance(value, FileIO):
             value.seek(0)
             content = value.read()

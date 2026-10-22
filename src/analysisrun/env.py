@@ -57,10 +57,11 @@ type ProcessRole = Literal["parent", "parallel-worker"]
 
 
 def get_process_role() -> ProcessRole:
-    role = os.getenv("ANALYSISRUN_PROCESS_ROLE", "parent")
-    if role == "parent" or role == "parallel-worker":
-        return role
-    raise ValueError(f"unsupported process role: {role!r}")
+    match role := os.getenv("ANALYSISRUN_PROCESS_ROLE", "parent"):
+        case "parent" | "parallel-worker":
+            return role
+        case _:
+            raise ValueError(f"unsupported process role: {role!r}")
 
 
 def get_execution_mode() -> ExecutionMode:

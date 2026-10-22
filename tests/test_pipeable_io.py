@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import sys
 from io import BytesIO
+from typing import Literal
 
 import pytest
 
@@ -27,7 +30,8 @@ def test_redirect_stdout_to_stderr():
 
 @pytest.mark.parametrize("interactivity", ["notebook", "terminal"])
 def test_human_input_errors_use_stderr_traceback_then_cowsay(
-    monkeypatch, interactivity
+    monkeypatch: pytest.MonkeyPatch,
+    interactivity: Literal["notebook", "terminal"] | None,
 ):
     from analysisrun import pipeable_io
 
@@ -47,6 +51,7 @@ def test_human_input_errors_use_stderr_traceback_then_cowsay(
     if interactivity == "notebook":
         assert caught.value is error
     else:
+        assert isinstance(caught.value, SystemExit)
         assert caught.value.code == 2
     assert stdout.getvalue() == b""
     diagnostics = stderr.getvalue().decode()

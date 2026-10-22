@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 from io import BytesIO
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import matplotlib
+import pytest
+from pydantic import BaseModel
+
+from analysisrun.env import ExecutionMode
 
 matplotlib.use("Agg")
 
 import pandas as pd
-import pytest
-from pydantic import BaseModel
 
 from analysisrun import (
     ManualInput,
@@ -46,7 +48,7 @@ def _dump_csv(df: pd.DataFrame) -> BytesIO:
     return buf
 
 
-def _force_interactivity(monkeypatch, value: str | None) -> None:
+def _force_interactivity(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
     """read_context と exit_with_error の両方で同じ interactivity を返すように固定する。"""
 
     from analysisrun import env, pipeable_io
@@ -143,7 +145,9 @@ def test_image_analysis_result_spec_accepts_cleansing_list():
     assert list(result._data.index) == [0]
 
 
-def test_read_context_showschema_outputs_streaming_input_schema(monkeypatch):
+def test_read_context_showschema_outputs_streaming_input_schema(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv("ANALYSISRUN_MODE", "showschema")
 
     stdout_buf = BytesIO()
@@ -186,7 +190,9 @@ def test_read_context_showschema_outputs_streaming_input_schema(monkeypatch):
     }
 
 
-def test_read_context_noninteractive_invalid_stdin_tar_outputs_error_tar(monkeypatch):
+def test_read_context_noninteractive_invalid_stdin_tar_outputs_error_tar(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
     _force_interactivity(monkeypatch, None)
@@ -207,7 +213,7 @@ def test_read_context_noninteractive_invalid_stdin_tar_outputs_error_tar(monkeyp
 
 @pytest.mark.parametrize("method", ["unsupported", "invalid"])
 def test_read_context_unsupported_mode_outputs_error_tar(
-    monkeypatch, method: str
+    monkeypatch: pytest.MonkeyPatch, method: str
 ):
     monkeypatch.setenv("ANALYSISRUN_MODE", method)
     monkeypatch.delenv("PSEUDO_NBENV", raising=False)
@@ -222,7 +228,7 @@ def test_read_context_unsupported_mode_outputs_error_tar(
     assert tar_result["error"] == f"未対応のANALYSISRUN_MODEです: {method}"
 
 
-def test_read_context_notebook_requires_manual_input(monkeypatch):
+def test_read_context_notebook_requires_manual_input(monkeypatch: pytest.MonkeyPatch):
     """notebook 環境では manual_input 指定が必須。"""
 
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
@@ -247,7 +253,10 @@ def _manual_input():
     [("notebook", "notebook"), ("terminal", "interactive"), (None, "streaming")],
 )
 def test_context_preserves_input_protocol_and_prepares_once(
-    monkeypatch, tmp_path, interactivity, mode
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interactivity: Literal["notebook", "terminal"] | None,
+    mode: ExecutionMode,
 ):
     from analysisrun import context as context_module
 
@@ -270,6 +279,7 @@ def test_context_preserves_input_protocol_and_prepares_once(
         if mode == "streaming"
         else {"0000": "SampleA", "0001": "SampleB"}
     )
+    assert ctx.image_analysis_results is not None
     frame = ctx.image_analysis_results.activity_spots
     assert frame.Entity.unique().tolist() == ["Activity Spots"]
     assert frame.Data.unique().tolist() == ["0000", "0001"]
@@ -277,7 +287,9 @@ def test_context_preserves_input_protocol_and_prepares_once(
     assert not hasattr(ctx, "state")
 
 
-def test_terminal_manual_input_avoids_prompt_and_infers_output_directory(monkeypatch):
+def test_terminal_manual_input_avoids_prompt_and_infers_output_directory(
+    monkeypatch: pytest.MonkeyPatch,
+):
     from analysisrun import context as context_module
 
     _force_interactivity(monkeypatch, "terminal")
@@ -289,14 +301,16 @@ def test_terminal_manual_input_avoids_prompt_and_infers_output_directory(monkeyp
     assert ctx.output_dir == DATA_DIR
 
 
-def test_terminal_without_manual_input_prompts(monkeypatch, tmp_path):
+def test_terminal_without_manual_input_prompts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     from analysisrun import context as context_module
 
     _force_interactivity(monkeypatch, "terminal")
     monkeypatch.setattr(context_module, "get_entrypoint", lambda: Path(__file__))
     calls = []
 
-    def prompt(model):
+    def prompt(model: type[BaseModel]):
         calls.append(model)
         return model(
             params=Params(threshold=4),
@@ -313,7 +327,7 @@ def test_terminal_without_manual_input_prompts(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("invalid", ["samples", "image", "params", "cleansing"])
 def test_invalid_input_stays_in_streaming_error_protocol(
-    monkeypatch, tmp_path, invalid
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, invalid: str
 ):
     _force_interactivity(monkeypatch, None)
     samples = _dump_csv(pd.DataFrame({"data": ["0000"], "sample": ["A"]}))
@@ -328,7 +342,7 @@ def test_invalid_input_stays_in_streaming_error_protocol(
 
     class InvalidCleansing(NamedTuple):
         activity_spots: pd.DataFrame = image_analysis_result_spec(
-            "invalid", lambda data: data
+            "invalid", cast(Any, lambda data: data)
         )
 
     request = create_tar_from_dict(

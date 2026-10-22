@@ -15,28 +15,34 @@ from typing import (
 from warnings import deprecated
 
 import questionary
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    GetCoreSchemaHandler,
+    TypeAdapter,
+    ValidationError,
+)
+from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined, core_schema
 
 T = TypeVar("T")
 
 
-def _get_field_descriptions(typ) -> str | None:
+def _get_field_descriptions(typ: object) -> str | None:
     if type(typ) is type(Annotated[None, None]):  # 'typing._AnnotatedAlias'クラス
-        for _, x in enumerate(typ.__metadata__):  # type: ignore
+        for x in getattr(typ, "__metadata__", ()):
             return _get_field_descriptions(x)
-    if type(typ) is type(Field()):
-        return typ.description  # type: ignore
+    if isinstance(typ, FieldInfo):
+        return typ.description
     return None
 
 
-def _get_default_value(field_info) -> Any:
+def _get_default_value(field_info: FieldInfo | None) -> Any:
     if field_info is None or field_info.is_required():
         return PydanticUndefined
     if field_info.default is not PydanticUndefined:
         return field_info.default
     if field_info.default_factory is not None:
-        return field_info.default_factory()
+        return field_info.get_default(call_default_factory=True)
     return PydanticUndefined
 
 
@@ -119,10 +125,10 @@ def _ask_questionary_text(
 def _prompt_for_value(
     model_class: type[BaseModel],
     draft_model: BaseModel,
-    field_type: type,
+    field_type: object,
     field_name: str,
     description: str | None,
-    field_info=None,
+    field_info: FieldInfo | None = None,
 ) -> Any:
     """
     フィールドの型に応じて適切な入力方法でユーザーから値を取得します。
@@ -358,24 +364,30 @@ def scan_model_input[T](model_class: type[T]) -> T:
         raise InputAborted() from None
 
 
-def custom_input(input_method: Literal["text", "path"] = "text"):
-    def wrapper(source_type):
-        source_type.__analysisrun_custom_input__ = True
-        source_type.__analysisrun_input_method__ = input_method
+def custom_input(
+    input_method: Literal["text", "path"] = "text",
+) -> Callable[[type[T]], type[T]]:
+    def wrapper(source_type: type[T]) -> type[T]:
+        metadata = {
+            "__analysisrun_custom_input__": True,
+            "__analysisrun_input_method__": input_method,
+        }
+        for name, value in metadata.items():
+            setattr(source_type, name, value)
         return source_type
 
     return wrapper
 
 
-def _is_custom_input(v) -> bool:
+def _is_custom_input(v: object) -> bool:
     return hasattr(v, "__analysisrun_custom_input__")
 
 
-def _get_custom_input_method(v) -> Literal["text", "path"]:
+def _get_custom_input_method(v: object) -> Literal["text", "path"]:
     return getattr(v, "__analysisrun_input_method__", "text")
 
 
-def _is_pydantic_model(v) -> TypeGuard[type[BaseModel]]:
+def _is_pydantic_model(v: object) -> TypeGuard[type[BaseModel]]:
     return not _is_custom_input(v) and (
         is_dataclass(v) or hasattr(v, "__get_pydantic_core_schema__")
     )
@@ -390,8 +402,10 @@ class FilePath(str):
     """
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_type, handler):
-        def validate(v):
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        def validate(v: object) -> object:
             if not isinstance(v, str):
                 return v
             if (v.startswith("'") and v.endswith("'")) or (
@@ -416,8 +430,10 @@ class DirectoryPath(str):
     """
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_type, handler):
-        def validate(v):
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        def validate(v: object) -> object:
             if not isinstance(v, str):
                 return v
             if (v.startswith("'") and v.endswith("'")) or (
@@ -477,8 +493,10 @@ class VirtualFile(Path):
         return self
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_type, handler):
-        def validate(v):
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        def validate(v: object) -> object:
             if isinstance(v, (str, Path)):
                 if isinstance(v, str):
                     if (v.startswith("'") and v.endswith("'")) or (

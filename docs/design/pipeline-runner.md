@@ -124,9 +124,11 @@ Snapshot の共有・寿命、worker 停止、通信異常、外部 TAR の終�
 
 ## 型チェック
 
-`uv run basedpyright` で Pipeline・Context・入力・Output・Worker・実行入口の型を確認する。
+`uv run basedpyright` でソース・テスト・サンプルを含むリポジトリ全体の型を確認する。
 開発依存関係に basedpyright を含め、引数の注釈漏れ・不明な引数型・ジェネリック型の
 型引数漏れもエラーとして検出する。
+意図的な型エラーを含む `tests/typing/pipeline_invalid.py` は通常チェックから除外し、
+`uv run pytest tests/test_pipeline_typing.py` で期待する診断位置・種類を検証する。
 
 Worker のリクエストは TypedDict、内部イベントはタグ付き tuple、TAR への書き込みと
 バイナリストリームは必要な操作を表す Protocol で定義する。

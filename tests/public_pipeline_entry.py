@@ -1,16 +1,20 @@
 """Real read_context/builder entrypoint for normal and TAR integration tests."""
 
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
 from typing import NamedTuple
 
 import matplotlib
+from pydantic import BaseModel
+
+from analysisrun import MapArgs, PreprocessArgs, SynthesizeArgs
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
-from pydantic import BaseModel
 
 from analysisrun import (
     ManualInput,
@@ -40,11 +44,11 @@ class Prepared(NamedTuple):
     cells: pd.DataFrame
 
 
-def prepare(args):
+def prepare(args: PreprocessArgs[Params, ImageResults]) -> Prepared:
     return Prepared(args.image_analysis_results.activity_spots.assign(prepared=True))
 
 
-def extract(args):
+def extract[I: ImageResults | Prepared](args: MapArgs[Params, I, None, None]) -> int:
     assert args.value is args.synthesized is None
     if isinstance(args.image_analysis_results, Prepared):
         assert args.image_analysis_results.cells.prepared.all()
@@ -57,16 +61,18 @@ def extract(args):
     return args.params.threshold
 
 
-def qc(args):
+def qc[I: ImageResults | Prepared](args: SynthesizeArgs[Params, I, int, None]) -> int:
     assert list(args.values) == ["0000", "0001"]
     return sum(args.values.values())
 
 
-def correct(args):
+def correct[I: ImageResults | Prepared](args: MapArgs[Params, I, int, int]) -> int:
     return args.value + args.synthesized
 
 
-def finalize(args):
+def finalize[I: ImageResults | Prepared](
+    args: SynthesizeArgs[Params, I, int, int],
+) -> pd.DataFrame:
     return pd.DataFrame(
         {"data": list(args.values), "score": list(args.values.values())}
     )

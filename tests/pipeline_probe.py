@@ -12,21 +12,21 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 from analysisrun.tar import create_tar_from_dict, read_tar_as_dict
 
-type State = dict
-type StageFunc = Callable[[State], State]
-type PrepareFunc = Callable[[State], int]
+type State = dict[str, Any]
+type StageFunc = Callable[[Any], Any]
 
 
 @dataclass(frozen=True)
 class Stage:
     kind: str
-    func: StageFunc | PrepareFunc
+    func: StageFunc
 
 
-def callable_id(func: StageFunc | PrepareFunc) -> tuple[str, str]:
+def callable_id(func: StageFunc) -> tuple[str, str]:
     module = func.__module__
     if module in {"__main__", __name__}:
         module = "<entrypoint>"
@@ -50,7 +50,7 @@ def canonical_manifest(stages: tuple[Stage, ...]) -> str:
 class Definition:
     stages: tuple[Stage, ...] = ()
 
-    def append(self, kind: str, func: StageFunc | PrepareFunc) -> "Definition":
+    def append(self, kind: str, func: StageFunc) -> "Definition":
         if kind not in {"preprocess", "map", "synthesize"}:
             raise ValueError("unsupported stage kind")
         if kind == "preprocess" and self.stages:
@@ -62,9 +62,9 @@ class Definition:
         func: StageFunc,
         state: State,
         *,
-        request: dict | None = None,
+        request: dict[str, Any] | None = None,
         calls: list[str] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         stages = (*self.stages, Stage("finalize", func))
         if request is None:
             # 逐次実行は Manifest を生成・検証する必要がない。
@@ -142,7 +142,9 @@ def build(with_preprocess: bool = True, mutation: str = "") -> Definition:
     return Definition(tuple(stages))
 
 
-def run_child(request: dict, *, with_preprocess: bool = True, mutation: str = ""):
+def run_child(
+    request: dict[str, Any], *, with_preprocess: bool = True, mutation: str = ""
+):
     """親から既存方式と同じ Python entrypoint + TAR/stdin で実行する。"""
     command = [sys.executable, str(Path(__file__).resolve())]
     if not with_preprocess:
