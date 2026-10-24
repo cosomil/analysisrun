@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from analysisrun.env import get_interactivity
 from analysisrun.helper import cowsay
 from analysisrun.interactive import VirtualFile
-from analysisrun.tar import create_tar_from_dict
+from analysisrun.tar import TarEntryWriter, create_tar_from_dict
 
 
 @contextmanager
@@ -146,7 +146,7 @@ def exit_with_error(
 def exit_with_error_streaming(
     code: ExitCodes,
     message: str,
-    tar: tarfile.TarFile,
+    tar: TarEntryWriter,
     stderr: IO[bytes],
     exception: Exception | None = None,
 ) -> NoReturn:

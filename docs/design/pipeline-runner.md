@@ -121,3 +121,18 @@ entrypoint で内部 Stage 列を再構築し、`execute_entrypoint()` へ渡す
 `tests/test_pipeline_parallel.py` と同じ entrypoint を再実行する
 `tests/pipeline_worker_entry.py` で並列性、結果等価性、barrier、到着時通知、状態分離、
 Snapshot の共有・寿命、worker 停止、通信異常、外部 TAR の終了契約を検証する。
+
+## 型チェック
+
+`uv run basedpyright` で `pipeline.py` / `pipeline_parallel.py` の型を確認する。
+開発依存関係に basedpyright を含め、引数の注釈漏れ・不明な引数型・ジェネリック型の
+型引数漏れもエラーとして検出する。
+
+Worker のリクエストは TypedDict、内部イベントはタグ付き tuple、TAR への書き込みと
+バイナリストリームは必要な操作を表す Protocol で定義する。
+params / value / synthesized は任意のユーザーオブジェクトを受け取る内部実行 API のため
+Any を使用する。公開 Builder のジェネリック型への接続は #86 で行う。
+
+`execute_entrypoint` は Worker のときだけ親の入力・対象を省略できる。
+親の実行では inputs と targets、逐次 map 実行では Output を必須とし、
+不足時はステージ実行前に ValueError を送出する。

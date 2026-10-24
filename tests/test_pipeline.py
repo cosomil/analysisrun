@@ -1,3 +1,4 @@
+import traceback
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -619,3 +620,36 @@ def test_invalid_definition_rejected_before_side_effects(inputs, kinds):
 
     with pytest.raises(ValueError):
         run([Stage(kind, forbidden) for kind in kinds], inputs)
+
+
+@pytest.mark.parametrize(
+    "kind,index", [("preprocess", 0), ("map", 2), ("synthesize", 3), ("finalize", 4)]
+)
+def test_stage_failure_preserves_exception_and_adds_context(inputs, kind, index):
+    error = LookupError("original failure")
+    called = []
+
+    def fail(args):
+        raise error
+
+    stages = [
+        Stage("preprocess", lambda a: a.image_analysis_results),
+        Stage("map", lambda a: 1),
+        Stage("map", lambda a: 2),
+        Stage("synthesize", lambda a: 3),
+        Stage("finalize", lambda a: pd.DataFrame()),
+    ]
+    stages[index] = Stage(kind, fail)
+    for i in range(index + 1, len(stages)):
+        stages[i] = Stage(stages[i].kind, lambda a: called.append(a))
+    with pytest.raises(LookupError) as caught:
+        run(stages, inputs)
+    assert caught.value is error
+    assert any(
+        frame.name == "fail" for frame in traceback.extract_tb(error.__traceback__)
+    )
+    note = error.__notes__[0]
+    assert f"stage={kind} stage_index={index}" in note
+    if kind == "map":
+        assert "lane_id=0 data_name='b' sample_name='same sample'" in note
+    assert not called

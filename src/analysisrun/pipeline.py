@@ -5,7 +5,7 @@ The runner keeps its snapshot alive until then. Values and synthesized objects a
 passed by reference; only inputs and params are isolated for each user call.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -24,6 +24,22 @@ type Inputs = NamedTupleLike[pd.DataFrame]
 class Stage:
     kind: Literal["preprocess", "map", "synthesize", "finalize"]
     func: Callable[[Any], Any]
+
+
+@contextmanager
+def stage_context(kind: str, index: int, lane: "Lane | None" = None) -> Iterator[None]:
+    """Keep the original exception and traceback, adding execution context."""
+    try:
+        yield
+    except Exception as exc:
+        note = f"pipeline stage={kind} stage_index={index}"
+        if lane is not None:
+            note += (
+                f" lane_id={lane.lane_id} data_name={lane.data_name!r}"
+                f" sample_name={lane.sample_name!r}"
+            )
+        exc.add_note(note)
+        raise
 
 
 @dataclass(frozen=True)
@@ -84,7 +100,7 @@ def _copy_inputs(inputs: Inputs) -> Inputs:
 class DataFrameInputSnapshot:
     """Copy DataFrames, preserving NamedTuple type, but not nested object cells."""
 
-    def __init__(self, inputs: Inputs, lanes: tuple[Lane, ...]):
+    def __init__(self, inputs: Inputs, lanes: tuple[Lane, ...]) -> None:
         self._lanes = lanes
         self._inputs: dict[int, Inputs] = {}
         names = [lane.data_name for lane in lanes]
@@ -119,7 +135,9 @@ class DataFrameInputSnapshot:
 
 
 @contextmanager
-def dataframe_snapshot(inputs: Inputs, lanes: tuple[Lane, ...]):
+def dataframe_snapshot(
+    inputs: Inputs, lanes: tuple[Lane, ...]
+) -> Iterator[DataFrameInputSnapshot]:
     yield DataFrameInputSnapshot(inputs, lanes)
 
 
@@ -179,21 +197,22 @@ def execute_map_segment(
     """Share lane semantics without serializing consecutive map results."""
     for index, stage in enumerate(segment.stages, segment.start):
         before_stage(index)
-        value = stage.func(
-            MapArgs(
-                restore_params(),
-                lane.data_name,
-                lane.sample_name,
-                restore_inputs(),
-                value,
-                restore_synthesized(),
-                output,
+        with stage_context("map", index, lane):
+            value = stage.func(
+                MapArgs(
+                    restore_params(),
+                    lane.data_name,
+                    lane.sample_name,
+                    restore_inputs(),
+                    value,
+                    restore_synthesized(),
+                    output,
+                )
             )
-        )
     return value
 
 
-def _validate_stages(stages: tuple[Stage, ...]) -> None:
+def _validate_stages(stages: Sequence[Stage]) -> None:
     if not stages or stages[-1].kind != "finalize":
         raise ValueError("pipeline must end with finalize")
     for index, stage in enumerate(stages):
@@ -229,14 +248,15 @@ def execute_pipeline(
     lanes = tuple(
         Lane(i, name, sample) for i, (name, sample) in enumerate(targets.items())
     )
-    values = dict.fromkeys(targets)
-    synthesized = None
+    values: dict[str, Any] = dict.fromkeys(targets)
+    synthesized: Any = None
     inputs = image_analysis_results
     index = 0
     if stages[0].kind == "preprocess":
-        inputs = stages[0].func(
-            PreprocessArgs(deepcopy(params), _copy_inputs(inputs), targets)
-        )
+        with stage_context("preprocess", 0):
+            inputs = stages[0].func(
+                PreprocessArgs(deepcopy(params), _copy_inputs(inputs), targets)
+            )
         index = 1
 
     def on_value(lane_id: int, value: Any) -> None:
@@ -251,31 +271,38 @@ def execute_pipeline(
                 end = index + 1
                 while end < len(stages) and stages[end].kind == "map":
                     end += 1
-                map_executor.execute(
-                    MapSegment(index, end, stages[index:end]),
-                    MapExecutionContext(
-                        snapshot,
-                        lanes,
-                        params,
-                        MappingProxyType(values),
-                        synthesized,
-                        output,
-                    ),
-                    on_value,
-                )
+                try:
+                    map_executor.execute(
+                        MapSegment(index, end, stages[index:end]),
+                        MapExecutionContext(
+                            snapshot,
+                            lanes,
+                            params,
+                            MappingProxyType(values),
+                            synthesized,
+                            output,
+                        ),
+                        on_value,
+                    )
+                except Exception as exc:
+                    exc.add_note(
+                        f"pipeline stage=map stage_start={index} stage_end={end}"
+                    )
+                    raise
                 index = end
                 continue
-            args = SynthesizeArgs(
-                deepcopy(params),
-                MappingProxyType(dict(snapshot.restore_all())),
-                MappingProxyType(values),
-                synthesized,
-            )
-            result = stage.func(args)
-            if stage.kind == "finalize":
-                if not isinstance(result, pd.DataFrame):
-                    raise TypeError("finalize must return a pandas DataFrame")
-                return result
+            with stage_context(stage.kind, index):
+                args = SynthesizeArgs(
+                    deepcopy(params),
+                    MappingProxyType(dict(snapshot.restore_all())),
+                    MappingProxyType(values),
+                    synthesized,
+                )
+                result = stage.func(args)
+                if stage.kind == "finalize":
+                    if not isinstance(result, pd.DataFrame):
+                        raise TypeError("finalize must return a pandas DataFrame")
+                    return result
             synthesized = result
             index += 1
     raise RuntimeError("pipeline ended without finalize")

@@ -1,6 +1,14 @@
 import tarfile
 from io import BytesIO
-from typing import IO, Any
+from typing import IO, Any, Protocol
+
+
+class TarEntryWriter(Protocol):
+    """The TAR operation shared by archives and entry-checking wrappers."""
+
+    def addfile(
+        self, tarinfo: tarfile.TarInfo, fileobj: IO[bytes] | None = None
+    ) -> None: ...
 
 
 class FileIO(BytesIO):
