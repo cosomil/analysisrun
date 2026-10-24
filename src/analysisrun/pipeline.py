@@ -153,20 +153,44 @@ class SequentialMapExecutor:
         if not isinstance(snapshot, RestorableInputSnapshot):
             raise TypeError("sequential execution requires restore(lane_id)")
         for lane in context.lanes:
-            value = context.values[lane.data_name]
-            for stage in segment.stages:
-                value = stage.func(
-                    MapArgs(
-                        deepcopy(context.params),
-                        lane.data_name,
-                        lane.sample_name,
-                        snapshot.restore(lane.lane_id),
-                        value,
-                        context.synthesized,
-                        context.output,
-                    )
-                )
+            value = execute_map_segment(
+                segment,
+                lane=lane,
+                restore_inputs=lambda lane_id=lane.lane_id: snapshot.restore(lane_id),
+                restore_params=lambda: deepcopy(context.params),
+                restore_synthesized=lambda: context.synthesized,
+                value=context.values[lane.data_name],
+                output=context.output,
+            )
             on_value(lane.lane_id, value)
+
+
+def execute_map_segment(
+    segment: MapSegment,
+    *,
+    lane: Lane,
+    restore_inputs: Callable[[], Inputs],
+    restore_params: Callable[[], Any],
+    restore_synthesized: Callable[[], Any],
+    value: Any,
+    output: Output,
+    before_stage: Callable[[int], None] = lambda index: None,
+) -> Any:
+    """Share lane semantics without serializing consecutive map results."""
+    for index, stage in enumerate(segment.stages, segment.start):
+        before_stage(index)
+        value = stage.func(
+            MapArgs(
+                restore_params(),
+                lane.data_name,
+                lane.sample_name,
+                restore_inputs(),
+                value,
+                restore_synthesized(),
+                output,
+            )
+        )
+    return value
 
 
 def _validate_stages(stages: tuple[Stage, ...]) -> None:

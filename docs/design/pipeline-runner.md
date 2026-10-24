@@ -77,3 +77,47 @@ synthesize の戻り値で synthesized を置換し、finalize は DataFrame を
 `tests/test_pipeline.py` は QC feedback、入力・params の分離、参照の保持、初期値、
 None 更新、ゼロレーン、失敗時の結果保持と中断、同期 callback、スナップショット寿命、
 Executor と Snapshot の独立した注入を検証する。
+
+## 子プロセス Map Executor（#84）
+
+`analysisrun.pipeline_parallel` は内部の `MultiprocessMapExecutor` と
+`file_snapshot` を提供する。Runner の注入点は変更しない。最低 Python は 3.13。
+公開 Builder と `read_context()` への接続は #86〜#87 で行うため、現在は同じ
+entrypoint で内部 Stage 列を再構築し、`execute_entrypoint()` へ渡す。
+`pipeline-worker` モードでは、親の入力読込より先にこの入口へ分岐する。
+入力・中間値のクラスは子でも import 可能なモジュールに定義する。
+
+- `file_snapshot` は preprocess 後の入力をレーン ID 別の pickle ファイルに一度保存する。
+  子には絶対パスだけを渡し、各 map と親の全体処理で毎回復元する。
+  各 Segment の全 worker 回収後までファイルを保持し、正常・異常の両方で削除する。
+- `MultiprocessMapExecutor(stages, entrypoint, on_image)` は全定義の Manifest を持つ。
+  子は version、全 Manifest、半開区間、担当レーンを検証し、指定された map だけを実行する。
+  連続 map のレーン内処理は逐次 Executor と共通で、中間 value は pickle 化しない。
+  子では params と synthesized も各 map で独立して復元する。
+- 並列上限は `os.process_cpu_count() or 1`。`ANALYSISRUN_MAX_WORKERS` は正の整数のみ許可。
+  実プロセス数はレーン数との最小値。連続するレーン群を順序を保って均等分割し、
+  Segment ごとに新規 worker を起動・回収する。ゼロレーンでは起動しない。
+- 管理スレッドは stdin の要求 TAR を送信後、stdout を逐次受信し、別スレッドで stderr を回収する。
+  子は要求を EOF まで読んでから応答を開始する。画像と value は有界 Queue（既定16）を通す。
+  `on_image(data_name, image_name, bytes, image_type)` と Runner の `on_value` は
+  呼出元のメインスレッドで同期実行し、到着時に反映する。figure の描画・エンコードは子で行う。
+- barrier は全担当 value、正常 TAR 終端、全 worker の終了コード0を確認してから通過する。
+  失敗時は未処理イベントの反映を止め、残る子を terminate、2秒で終了しなければ kill し、
+  全通信スレッドを回収して例外を返す。受信済みの画像・value は取り消さない。
+  `error.json`、重複・担当外・不足の value、壊れた pickle/TAR、異常終了を拒否する。
+
+`execute_entrypoint` の `parallel-entrypoint` は画像を `output_dir` に保存し、
+最終 DataFrame を返す。`parallel-entrypoint-streaming` は既存と同じ gzip TAR に
+画像、`result_csv`、レーン別 `result_json` を書き、正常終端して `sys.exit(0)` する。
+失敗時は最後のデータエントリに UTF-8 の `error` を書き、正常終端して非ゼロ終了する。
+内部 worker の構造化 `error.json` とは別形式。Notebook は既定で逐次実行を選び、
+従来の figure Output を渡す。pickle とバイナリ標準出力を要求しない。
+
+小さい画像・value も即座に到着するよう、書込 TAR は write/tell/flush を持つ位置カウンタを
+介して record バッファなしで送る。tarfile の非公開属性には触れない。
+例外時には `TarFile.__exit__` が終端を書かないため、finally で明示的に close する。
+画像名の衝突、巨大画像、エラー表示の詳細化は #85 で扱う。
+
+`tests/test_pipeline_parallel.py` と同じ entrypoint を再実行する
+`tests/pipeline_worker_entry.py` で並列性、結果等価性、barrier、到着時通知、状態分離、
+Snapshot の共有・寿命、worker 停止、通信異常、外部 TAR の終了契約を検証する。
