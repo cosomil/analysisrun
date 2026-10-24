@@ -89,14 +89,14 @@ def run(
 
 def track_children(monkeypatch: pytest.MonkeyPatch):
     processes: list[subprocess.Popen[bytes]] = []
-    original = p.subprocess.Popen
+    original = p.subprocess.Popen  # pyright: ignore[reportPrivateImportUsage]
 
     def popen(*args: Any, **kwargs: Any):
         proc = cast("subprocess.Popen[bytes]", original(*args, **kwargs))
         processes.append(proc)
         return proc
 
-    monkeypatch.setattr(p.subprocess, "Popen", popen)
+    monkeypatch.setattr(p.subprocess, "Popen", popen)  # pyright: ignore[reportPrivateImportUsage]
     return processes
 
 
@@ -214,9 +214,9 @@ def test_worker_limit_invalid(monkeypatch: pytest.MonkeyPatch, setting: str):
 
 def test_worker_limit_default_and_split(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ANALYSISRUN_MAX_WORKERS", raising=False)
-    monkeypatch.setattr(p.os, "process_cpu_count", lambda: None)
+    monkeypatch.setattr(p.os, "process_cpu_count", lambda: None)  # pyright: ignore[reportPrivateImportUsage]
     assert p.worker_limit() == 1
-    monkeypatch.setattr(p.os, "process_cpu_count", lambda: 4)
+    monkeypatch.setattr(p.os, "process_cpu_count", lambda: 4)  # pyright: ignore[reportPrivateImportUsage]
     assert p.worker_limit() == 4
     monkeypatch.setenv("ANALYSISRUN_MAX_WORKERS", "3")
     assert p.worker_limit() == 3
@@ -295,7 +295,7 @@ def test_pickle_failure_precedes_children(
     def forbidden(*args: Any, **kwargs: Any):
         pytest.fail("must not spawn")
 
-    monkeypatch.setattr(p.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(p.subprocess, "Popen", forbidden)  # pyright: ignore[reportPrivateImportUsage]
     stages = (Stage("map", entry.third), Stage("finalize", entry.finalize))
     lanes = (Lane(0, "0", "sample"),)
     executor = p.MultiprocessMapExecutor(stages, ENTRYPOINT, lambda *args: None)
@@ -314,7 +314,7 @@ def test_pickle_failure_precedes_children(
 
 
 def test_zero_lanes_no_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(p.subprocess, "Popen", lambda *a, **k: pytest.fail("no spawn"))
+    monkeypatch.setattr(p.subprocess, "Popen", lambda *a, **k: pytest.fail("no spawn"))  # pyright: ignore[reportPrivateImportUsage]
     stages = (Stage("map", entry.third), Stage("finalize", entry.finalize))
     result = execute_pipeline(
         stages,
@@ -425,8 +425,8 @@ def test_notebook_entrance_avoids_binary_stdout_and_pickle(
 
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.setenv("ANALYSISRUN_INTERACTIVITY", "notebook")
-    monkeypatch.setattr(p.sys, "stdout", StringIO())
-    monkeypatch.setattr(p.pickle, "dumps", lambda *a, **k: pytest.fail("no pickle"))
+    monkeypatch.setattr(p.sys, "stdout", StringIO())  # pyright: ignore[reportPrivateImportUsage]
+    monkeypatch.setattr(p.pickle, "dumps", lambda *a, **k: pytest.fail("no pickle"))  # pyright: ignore[reportPrivateImportUsage]
     result = execute_entrypoint(
         [Stage("finalize", entry.finalize)],
         entrypoint=ENTRYPOINT,
@@ -449,7 +449,7 @@ def test_input_pickle_failure_cleans_snapshot_directory(
     monkeypatch: pytest.MonkeyPatch,
 ):
     directories = []
-    original = p.TemporaryDirectory
+    original = p.TemporaryDirectory  # pyright: ignore[reportPrivateImportUsage]
 
     def temporary(*args: Any, **kwargs: Any):
         directory = original(*args, **kwargs)
@@ -761,7 +761,7 @@ def test_notebook_output_and_original_failure_are_preserved(
 ):
     monkeypatch.delenv("ANALYSISRUN_MODE", raising=False)
     monkeypatch.setenv("ANALYSISRUN_INTERACTIVITY", "notebook")
-    monkeypatch.setattr(p.pickle, "dumps", lambda *a: pytest.fail("no pickle"))
+    monkeypatch.setattr(p.pickle, "dumps", lambda *a: pytest.fail("no pickle"))  # pyright: ignore[reportPrivateImportUsage]
     shown = []
     error = LookupError("notebook failure")
 

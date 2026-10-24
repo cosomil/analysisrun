@@ -9,7 +9,7 @@ example = importlib.import_module("example.qc-feedback.__main__")
 original = example.apply_qc_evaluation
 
 
-def fail_after_output(args):
+def fail_after_output(args):  # type: ignore
     result = original(args)
     # 入力で指定したレーン自身が画像を出してから失敗するため、
     # Worker 間の実行順や sleep に依存せず部分出力を検証できる。
@@ -18,5 +18,5 @@ def fail_after_output(args):
     return result
 
 
-example.apply_qc_evaluation = fail_after_output
+example.apply_qc_evaluation = fail_after_output  # pyright: ignore[reportAttributeAccessIssue]
 example.main()
