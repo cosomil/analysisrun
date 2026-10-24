@@ -1,24 +1,30 @@
 """Entrypoint shared by subprocess integration tests; pickle types are importable."""
 
+from __future__ import annotations
+
 import json
 import os
 import pickle
 import signal
 import sys
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from time import monotonic, sleep
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import matplotlib
+
+from analysisrun import MapArgs, PreprocessArgs, SynthesizeArgs
+from analysisrun.env import ExecutionMode
+from analysisrun.pipeline import Stage
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from analysisrun import pipeline_parallel as transport
-from analysisrun.pipeline import Stage
-from analysisrun.pipeline_parallel import execute_entrypoint
+from analysisrun import pipeline_worker as transport
+from analysisrun.pipeline_entrypoint import execute_entrypoint
 
 
 class Inputs(NamedTuple):
@@ -30,7 +36,7 @@ class Prepared(NamedTuple):
     spots: pd.DataFrame
 
 
-def wait_for(path):
+def wait_for(path: Path):
     deadline = monotonic() + 15
     while not path.exists():
         if monotonic() >= deadline:
@@ -38,7 +44,7 @@ def wait_for(path):
         sleep(0.01)
 
 
-def prepare(args):
+def prepare(args: PreprocessArgs[Any, Inputs]) -> Prepared:
     if args.params.get("fault") == "preprocess":
         raise LookupError("injected preprocess failure")
     directory = Path(args.params["directory"])
@@ -51,7 +57,9 @@ def prepare(args):
     )
 
 
-def first(args):
+def first(
+    args: MapArgs[Any, Prepared, None, dict[str, Any]],
+) -> dict[str, Callable[[], int]]:
     print("worker diagnostic")
     directory = Path(args.params["directory"])
     lane = args.data_name
@@ -86,13 +94,13 @@ def first(args):
     args.image_analysis_results.cells["score"] = -1
     args.image_analysis_results.spots["score"] = -1
     args.params["history"].append("mutated")
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker":
+    if os.environ.get("ANALYSISRUN_PROCESS_ROLE") == "parallel-worker":
         args.synthesized["history"].append("mutated")
     # Consecutive maps must not pickle this intermediate lambda.
     return {"get_score": lambda: score}
 
 
-def emit_image(args):
+def emit_image(args: MapArgs[Any, Any, Any, Any]) -> None:
     fig, ax = plt.subplots()
     lane = args.data_name
     ax.plot([0, 1], [0, int(lane)])
@@ -104,7 +112,9 @@ def emit_image(args):
     args.output(fig, name, "qc", format="png")
 
 
-def second(args):
+def second(
+    args: MapArgs[Any, Prepared, dict[str, Callable[[], int]], dict[str, Any]],
+) -> int | Callable[[], None]:
     if args.params.get("fault") == "consecutive-image":
         emit_image(args)
     if args.params.get("fault") == "unpicklable":
@@ -122,11 +132,13 @@ def second(args):
     return score * 2
 
 
-def initial(args):
+def initial(args: SynthesizeArgs[Any, Prepared, None, None]) -> dict[str, Any]:
     return {"history": []}
 
 
-def synthesize(args):
+def synthesize(
+    args: SynthesizeArgs[Any, Prepared, int, dict[str, Any]],
+) -> dict[str, Any]:
     if args.params.get("fault") == "synthesize":
         raise LookupError("injected synthesize failure")
     directory = Path(args.params["directory"])
@@ -137,13 +149,13 @@ def synthesize(args):
     return {"total": sum(args.values.values()), "history": []}
 
 
-def third(args):
+def third(args: MapArgs[Any, Prepared, int, dict[str, Any]]) -> int:
     if args.params.get("fault") == "later-image":
         emit_image(args)
     directory = Path(args.params["directory"])
     if not (directory / "synthesize").exists() or args.synthesized["history"]:
         raise ValueError("invalid synthesized state")
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker":
+    if os.environ.get("ANALYSISRUN_PROCESS_ROLE") == "parallel-worker":
         args.synthesized["history"].append("mutated")
     # Parent must receive the first lane before the child can finish the next.
     if args.params.get("fault") == "ack" and args.data_name == "1":
@@ -151,7 +163,7 @@ def third(args):
     return args.value + args.synthesized["total"]
 
 
-def finalize(args):
+def finalize(args: SynthesizeArgs[Any, Prepared, int, dict[str, Any]]) -> pd.DataFrame:
     if args.params.get("fault") == "finalize":
         raise LookupError("injected finalize failure")
     (Path(args.params["directory"]) / "finalize").touch()
@@ -161,7 +173,7 @@ def finalize(args):
     return pd.DataFrame({"data": names, "score": list(args.values.values())})
 
 
-def other(args):
+def other(args: SynthesizeArgs[Any, Any, Any, Any]):
     raise RuntimeError("mismatched definition must not execute")
 
 
@@ -175,9 +187,9 @@ def definition():
         Stage("map", third),
         Stage("finalize", finalize),
     ]
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker" and os.environ.get(
-        "TEST_MISMATCH"
-    ):
+    if os.environ.get(
+        "ANALYSISRUN_PROCESS_ROLE"
+    ) == "parallel-worker" and os.environ.get("TEST_MISMATCH"):
         stages[-1] = Stage("finalize", other)
     return tuple(stages)
 
@@ -186,7 +198,7 @@ def inputs():
     return Inputs(pd.DataFrame({"Data": [str(i) for i in range(4)], "score": range(4)}))
 
 
-def malformed_response(fault):
+def malformed_response(fault: str):
     entries = {}
     transport._read_entries(
         sys.stdin.buffer, lambda member, data: entries.update({member.name: data})
@@ -213,15 +225,25 @@ def malformed_response(fault):
     sys.exit(7 if fault == "nonzero" else 0)
 
 
+def execution_mode(value: str | None) -> ExecutionMode | None:
+    match value:
+        case None | "notebook" | "interactive" | "streaming" | "showschema":
+            return value
+        case _:
+            raise ValueError(f"invalid test mode: {value!r}")
+
+
 def main():
     stages = definition()
-    if os.environ.get("ANALYSISRUN_MODE") == "pipeline-worker":
+    if os.environ.get("ANALYSISRUN_PROCESS_ROLE") == "parallel-worker":
         if fault := os.environ.get("TEST_RESPONSE_FAULT"):
             malformed_response(fault)
         execute_entrypoint(stages, entrypoint=Path(__file__))
+    mode = execution_mode(os.environ.get("TEST_EXECUTION_MODE"))
     execute_entrypoint(
         stages,
         entrypoint=Path(__file__),
+        mode=mode,
         params={
             "directory": os.environ["TEST_DIRECTORY"],
             "history": [],

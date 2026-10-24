@@ -1,15 +1,20 @@
 """#82 の状態所有権・実ストリーム・異常系の再現可能な検証。"""
 
+from __future__ import annotations
+
 import pickle
 import tarfile
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
 from tests import pipeline_transfer_probe as p
+from tests.support import read_tar_member
 
 
 @pytest.fixture
@@ -23,10 +28,12 @@ def targets():
     return {"../a/name": "sample a", "日本語/b": "sample b"}
 
 
-def test_preprocess_snapshot_type_lifetime_and_parent_restore(inputs, targets):
+def test_preprocess_snapshot_type_lifetime_and_parent_restore(
+    inputs: p.Inputs, targets: dict[str, str]
+):
     calls = []
 
-    def preprocess(data):
+    def preprocess(data: p.Inputs | p.Prepared):
         calls.append(1)
         return p.prepare(data)
 
@@ -42,11 +49,14 @@ def test_preprocess_snapshot_type_lifetime_and_parent_restore(inputs, targets):
         ]
         # synthesize 相当の破壊的変更も、後続 map/finalize 入力に伝播しない。
         restored["../a/name"].cells["score"] = -100
+        assert isinstance(restored["../a/name"], p.Prepared)
         restored["../a/name"].spots["score"] = -100
         assert p.restore_all(lanes)["../a/name"].cells.score.iloc[0] == 11
-        assert p.restore_all(lanes)["../a/name"].spots.score.iloc[0] == 11
+        fresh = p.restore_all(lanes)["../a/name"]
+        assert isinstance(fresh, p.Prepared)
+        assert fresh.spots.score.iloc[0] == 11
         with pytest.raises(TypeError):
-            restored["new"] = None
+            cast(dict[str, Any], restored)["new"] = None
     assert calls == [1]
     assert inputs.cells.score.tolist() == [1, 2]
     assert all(not path.exists() for path in paths)
@@ -61,7 +71,9 @@ def test_preprocess_snapshot_type_lifetime_and_parent_restore(inputs, targets):
         {"tuple": (1, b"bytes"), "set": {2, 3}},
     ],
 )
-def test_pickle_roundtrip_request_response_and_file(inputs, targets, tmp_path, value):
+def test_pickle_roundtrip_request_response_and_file(
+    inputs: p.Inputs, targets: dict[str, str], tmp_path: Path, value: Any
+):
     path = tmp_path / "value.pkl"
     path.write_bytes(p.dumps(value, "test"))
     restored = pickle.loads(path.read_bytes())
@@ -77,7 +89,9 @@ def test_pickle_roundtrip_request_response_and_file(inputs, targets, tmp_path, v
             assert result == value
 
 
-def test_segment_isolation_and_streaming_before_child_exit(inputs, targets, tmp_path):
+def test_segment_isolation_and_streaming_before_child_exit(
+    inputs: p.Inputs, targets: dict[str, str], tmp_path: Path
+):
     processes, events = [], []
     params = {"history": []}
     synthesized = {"history": []}
@@ -85,7 +99,7 @@ def test_segment_isolation_and_streaming_before_child_exit(inputs, targets, tmp_
     with p.snapshots(inputs, targets, p.prepare) as lanes:
         values = {0: None, 1: None}
 
-        def on_event(kind, lane_id, data):
+        def on_event(kind: str, lane_id: int, data: Any):
             events.append((kind, lane_id, data))
             # 子はこの ack を待ってから次レーン/終了に進む。
             assert processes[0].poll() is None
@@ -133,7 +147,12 @@ def test_segment_isolation_and_streaming_before_child_exit(inputs, targets, tmp_
         ({"stage_end": 3.0}, "invalid map segment"),
     ],
 )
-def test_reject_before_any_stage(inputs, targets, change, message):
+def test_reject_before_any_stage(
+    inputs: p.Inputs,
+    targets: dict[str, str],
+    change: dict[str, Any],
+    message: str | None,
+):
     with p.snapshots(inputs, targets, p.prepare) as lanes:
         request = p.request_for(lanes) | change
         values, events = {0: None, 1: None}, []
@@ -162,7 +181,7 @@ def test_reject_before_any_stage(inputs, targets, change, message):
     ],
 )
 def test_transport_failure_reaps_child_before_snapshot_cleanup(
-    inputs, targets, fault, message
+    inputs: p.Inputs, targets: dict[str, str], fault: str, message: str | None
 ):
     processes, following = [], []
     paths = []
@@ -189,7 +208,7 @@ def test_transport_failure_reaps_child_before_snapshot_cleanup(
 
 
 def test_failed_lane_preserves_received_values_images_and_absolute_stage(
-    inputs, targets
+    inputs: p.Inputs, targets: dict[str, str]
 ):
     with p.snapshots(inputs, targets, p.prepare) as lanes:
         values, events = {0: None, 1: None}, []
@@ -227,7 +246,9 @@ def test_failed_lane_preserves_received_values_images_and_absolute_stage(
         ]
 
 
-def test_unpicklable_final_value_has_lane_and_stage(inputs, targets):
+def test_unpicklable_final_value_has_lane_and_stage(
+    inputs: p.Inputs, targets: dict[str, str]
+):
     with p.snapshots(inputs, targets) as lanes:
         with pytest.raises(p.TransferError, match="cannot pickle value lane=0") as exc:
             p.run_child(p.request_for(lanes, 7, 8), None, None, {0: None, 1: None})
@@ -235,7 +256,9 @@ def test_unpicklable_final_value_has_lane_and_stage(inputs, targets):
         assert "../a/name" in str(exc.value)
 
 
-def test_corrupt_received_value_has_lane_and_segment_context(inputs, targets):
+def test_corrupt_received_value_has_lane_and_segment_context(
+    inputs: p.Inputs, targets: dict[str, str]
+):
     processes, events, following = [], [], []
     values = {0: None, 1: p.Feature(99)}
     with p.snapshots(inputs, targets, p.prepare) as lanes:
@@ -279,7 +302,9 @@ def test_corrupt_received_value_has_lane_and_segment_context(inputs, targets):
 
 
 @pytest.mark.parametrize("field", ["params", "synthesized", "value"])
-def test_parent_pickle_failure_has_data_context_and_reaps(inputs, targets, field):
+def test_parent_pickle_failure_has_data_context_and_reaps(
+    inputs: p.Inputs, targets: dict[str, str], field: str
+):
     processes = []
     with p.snapshots(inputs, targets) as lanes:
         bad = lambda: None
@@ -295,18 +320,18 @@ def test_parent_pickle_failure_has_data_context_and_reaps(inputs, targets, field
 
 
 def test_input_pickle_failure_cleans_directory_before_any_child(
-    inputs, targets, monkeypatch
+    inputs: p.Inputs, targets: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ):
     directories = []
     original = p.TemporaryDirectory
 
-    def temporary(*args, **kwargs):
+    def temporary(*args: Any, **kwargs: Any):
         directory = original(*args, **kwargs)
         directories.append(Path(directory.name))
         return directory
 
     monkeypatch.setattr(p, "TemporaryDirectory", temporary)
-    inputs.cells["object"] = [lambda: None, None]
+    inputs.cells["object"] = pd.Series([lambda: None, None], dtype=object)
     with (
         pytest.raises(p.TransferError, match="input lane=0 data_name=../a/name"),
         p.snapshots(inputs, targets),
@@ -316,14 +341,14 @@ def test_input_pickle_failure_cleans_directory_before_any_child(
 
 
 def test_notebook_copies_without_pickle_and_preserves_type(
-    inputs, targets, monkeypatch
+    inputs: p.Inputs, targets: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ):
-    def forbidden(*args, **kwargs):
+    def forbidden(*args: Any, **kwargs: Any):
         pytest.fail("Notebook must not require pickle")
 
     monkeypatch.setattr(p.pickle, "dumps", forbidden)
     monkeypatch.setattr(p.pickle, "loads", forbidden)
-    inputs.cells["object"] = [lambda: None, lambda: None]
+    inputs.cells["object"] = pd.Series([lambda: None, lambda: None], dtype=object)
     snapshot = p.notebook_snapshot(inputs, targets, p.prepare)
     inputs.cells["score"] = -2
     first = p.notebook_restore(snapshot)
@@ -331,13 +356,14 @@ def test_notebook_copies_without_pickle_and_preserves_type(
     first["../a/name"].cells["score"] = -3
     second = p.notebook_restore(snapshot)
     assert second["../a/name"].cells.score.iloc[0] == 11
+    assert isinstance(second["日本語/b"], p.Prepared)
     assert second["日本語/b"].spots.score.iloc[0] == 12
     with pytest.raises(TypeError):
-        second["new"] = None
+        cast(dict[str, Any], second)["new"] = None
 
 
 @pytest.mark.parametrize("cut", [1, 1024, 10240])
-def test_truncated_tar_is_rejected(cut):
+def test_truncated_tar_is_rejected(cut: int):
     stream = BytesIO()
     with tarfile.open(fileobj=stream, mode="w|") as tar:
         p.add(tar, "lanes/0/value.pkl", p.dumps(None, "value"))
@@ -358,7 +384,7 @@ def test_response_version_mismatch():
         p.receive(BytesIO(stream.getvalue()), {"lanes": []}, {}, lambda *args: None)
 
 
-def test_parent_argument_ownership(inputs, targets):
+def test_parent_argument_ownership(inputs: p.Inputs, targets: dict[str, str]):
     params = {"history": []}
     values = {name: p.Feature(1) for name in targets}
     synthesized = values["../a/name"]
@@ -373,7 +399,7 @@ def test_parent_argument_ownership(inputs, targets):
             first["values"]["new"] = None
 
 
-def test_none_return_replaces_previous_value(inputs, targets):
+def test_none_return_replaces_previous_value(inputs: p.Inputs, targets: dict[str, str]):
     with p.snapshots(inputs, targets) as lanes:
         values = {0: p.Feature(1), 1: p.Feature(2)}
         p.run_child(p.request_for(lanes, 8, 9), None, None, values)
@@ -381,14 +407,20 @@ def test_none_return_replaces_previous_value(inputs, targets):
 
 
 @pytest.mark.parametrize("preprocess", [None, p.prepare])
-def test_snapshot_is_fixed_before_first_map(inputs, targets, preprocess):
+def test_snapshot_is_fixed_before_first_map(
+    inputs: p.Inputs,
+    targets: dict[str, str],
+    preprocess: Callable[[p.Inputs | p.Prepared], p.Inputs | p.Prepared] | None,
+):
     with p.snapshots(inputs, targets, preprocess) as lanes:
         inputs.cells["score"] = -100
         expected = 11 if preprocess else 1
         assert p.restore_all(lanes)["../a/name"].cells.score.iloc[0] == expected
 
 
-def test_missing_lane_is_rejected_before_children(inputs, targets):
+def test_missing_lane_is_rejected_before_children(
+    inputs: p.Inputs, targets: dict[str, str]
+):
     with (
         pytest.raises(ValueError, match="missing lane"),
         p.snapshots(inputs, targets | {"missing": "sample"}),
@@ -396,7 +428,9 @@ def test_missing_lane_is_rejected_before_children(inputs, targets):
         pytest.fail("invalid lane set must not reach execution")
 
 
-def test_request_schema_and_assigned_lane_subset(inputs, targets):
+def test_request_schema_and_assigned_lane_subset(
+    inputs: p.Inputs, targets: dict[str, str]
+):
     with p.snapshots(inputs, targets) as lanes:
         request = p.request_for(lanes[1:], 5, 6)
         stream = BytesIO()
@@ -409,7 +443,7 @@ def test_request_schema_and_assigned_lane_subset(inputs, targets):
                 "lanes/1/value.pkl",
             ]
             for name in ["params.pkl", "synthesized.pkl", "lanes/1/value.pkl"]:
-                assert pickle.loads(archive.extractfile(name).read()) is None
+                assert pickle.loads(read_tar_member(archive, name)) is None
         values = {1: p.Feature(3)}
         p.run_child(request, None, None, values)
         assert values == {1: p.Feature(3)}

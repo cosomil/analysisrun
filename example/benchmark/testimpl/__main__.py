@@ -70,8 +70,8 @@ def _field_id(df_field: pd.DataFrame) -> int:
 
 
 def analyze(
-    args: ar.AnalyzeArgs[BenchParameters, BenchImageAnalysisResults],
-) -> pd.Series:
+    args: ar.MapArgs[BenchParameters, BenchImageAnalysisResults, None, None],
+) -> dict[str, object]:
     params = args.params
     df = args.image_analysis_results.activity_spots
     fields = ar.scan_fields(df, args.data_name)
@@ -168,22 +168,27 @@ def analyze(
         output(fig2, f"{lane_name}_corr.png", "heatmap")  # , bbox_inches="tight")
 
     # 結果サマリ（ベンチ用のメタ情報）
-    return pd.Series(
-        {
-            "Lane": lane_name,
-            "NumFields": len(field_ids),
-            "PointsPerField": params.points_per_field,
-            "PolyDegree": params.poly_degree,
-            "Repeats": params.repeats,
-            "Tau": params.tau,
-            "Ok": True,
-        }
-    )
+    return {
+        "Lane": lane_name,
+        "NumFields": len(field_ids),
+        "PointsPerField": params.points_per_field,
+        "PolyDegree": params.poly_degree,
+        "Repeats": params.repeats,
+        "Tau": params.tau,
+        "Ok": True,
+        "data": args.data_name,
+        "sample_name": args.sample_name,
+    }
 
 
-def postprocess(args: ar.PostprocessArgs[BenchParameters]):
-    args.analysis_results["Postprocessed"] = True
-    return args.analysis_results
+def postprocess(
+    args: ar.SynthesizeArgs[
+        BenchParameters, BenchImageAnalysisResults, dict[str, object], None
+    ],
+):
+    result = pd.DataFrame(args.values.values())
+    result["Postprocessed"] = True
+    return result
 
 
 test_dir = Path(__file__).parent.parent.parent.parent.resolve() / "tests"
@@ -206,7 +211,6 @@ ctx = ar.read_context(
     ),
     output_dir=output_dir,
 )
-print(ctx.mode)
-results = ctx.run_analysis(analyze, postprocess)
+results = ctx.pipeline().map(analyze).finalize(postprocess)
 
 results.to_csv(output_dir / "result.csv", index=False)

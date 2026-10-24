@@ -38,8 +38,8 @@ class ImageAnalysisResults(NamedTuple):
 
 
 def analyze(
-    args: ar.AnalyzeArgs[Params, ImageAnalysisResults],
-) -> pd.Series:
+    args: ar.MapArgs[Params, ImageAnalysisResults, None, None],
+) -> dict[str, object]:
     df = args.image_analysis_results.activity_spots
     # Fields は直接生成せず、scan_fields から復元する
     fields = ar.scan_fields(df, args.data_name)
@@ -56,17 +56,17 @@ def analyze(
     ax.set_ylabel("count")
     args.output(fig, f"{lane_name}_area_hist.png", "png")
 
-    return pd.Series(
-        {
+    return {
+            "data": args.data_name,
+            "sample_name": args.sample_name,
             "analyzed_at": ar.get_jst_timestamp(),
             "ok": ok,
             "area_mean": area_mean,
         }
-    )
 
 
-def postprocess(args: ar.PostprocessArgs[Params]) -> pd.DataFrame:
-    results = args.analysis_results.copy()
+def postprocess(args: ar.SynthesizeArgs[Params, ImageAnalysisResults, dict[str, object], None]) -> pd.DataFrame:
+    results = pd.DataFrame(args.values.values())
     if not results["ok"].all():
         results["ok"] = False
     return results
@@ -88,13 +88,13 @@ ctx = ar.read_context(
     output_dir=project_root / "output",
 )
 
-result = ctx.run_analysis(analyze=analyze, postprocess=postprocess)
+result = ctx.pipeline().map(analyze).finalize(postprocess)
 result.to_csv(project_root / "output" / "result.csv", index=False)
 ```
 
 ### 多段 Pipeline のエラーと出力（内部実行 API）
 
-`pipeline.execute_sequential` / `pipeline_parallel.execute_entrypoint` では、
+`pipeline.execute_sequential` / `pipeline_entrypoint.execute_entrypoint` では、
 最初の失敗で後続ステージを中断します。並列実行では Worker を停止・回収してから
 例外を通知し、失敗時に最終 DataFrame は返しません。
 
@@ -105,7 +105,7 @@ result.to_csv(project_root / "output" / "result.csv", index=False)
   レーンを伝達し、親で `TransferError` として通知します。転送・pickle 復元・非ゼロ終了の
   障害にも対象セグメント／レーンと子の stderr を含めます。
 - 非 TAR の端末実行では stderr に traceback、続いて処理種別・対象と問い合わせ案内の
-  cowsay を表示し、非ゼロ終了します。Notebook では元の例外を送出します。
+  cowsay を表示し、非ゼロ終了します。Notebook では元の例外を送出し、traceback の表示は Notebook に任せます。
 - 受理済みの value / synthesized と参照先への変更はロールバックしません。
   ローカル保存済み・Notebook 表示済み・TAR 送信済みの画像も残ります。
 - 外部 gzip TAR は `data_name/images/image_name` に画像を逐次送信します。
@@ -116,7 +116,33 @@ result.to_csv(project_root / "output" / "result.csv", index=False)
   書き込み、TAR を正常終端して非ゼロ終了します。受信側は `error` の有無を必ず確認してください。
   出力先の切断など、物理的に書き込みを完結できない障害はこの保証の対象外です。
 - ローカル保存先は従来どおり `output_dir / image_name` で、同名は上書きします。
-  衝突回避は利用者の責務です。Notebook / sequential は指定された Output に委譲します。
+  衝突回避は利用者の責務です。Notebook は指定された Output に委譲します。
 
 画像は比較的小さく、1 レーン数枚程度を想定しています。BytesIO / bytes と有界 Queue で
 転送するため、画像単位のメモリを使用します。チャンク転送や一時ファイルへの退避は行いません。
+
+### 集計と前処理
+
+`read_context() → ctx.pipeline() → finalize()` で解析を実行します。
+map はレーン値（例: dict）を返し、最終 DataFrame の組み立ては
+finalize で `pd.DataFrame(args.values.values())` のように行います。
+`data` / `sample_name` 列が必要なら map の戻り値に明示的に含めます。
+
+preprocess は定義の先頭で最大一度だけ設定でき、finalize の実行ごとに一度、
+変換後の入力 NamedTuple を直接返します。共有情報は synthesize で返し、
+後続の map / synthesize / finalize から `args.synthesized` で参照します。
+[前処理の使用例](example/preprocess/README.md) を参照してください。
+
+### 実行モード
+
+- `notebook`: Notebook 内で逐次実行し DataFrame を返す。画像は Notebook 上に表示する。ManualInput が必須。
+- `interactive`: TTY 端末で map を Worker により並列実行し DataFrame を返す。
+  ManualInput があれば入力プロンプトは出さない。画像はファイルへ保存する。
+- `streaming`: 非 TTY の stdin から TAR を読み、stdout へ gzip TAR を送って終了する。
+  ManualInput があっても非 TTY では TAR 入力を要求する。
+- `showschema`: `ANALYSISRUN_MODE=showschema` で入力 JSON Schema を出力し正常終了する。
+
+`ANALYSISRUN_INTERACTIVITY=notebook|terminal` で環境判定を上書きできます。
+内部 Worker は `ANALYSISRUN_PROCESS_ROLE=parallel-worker` で識別し、実行モードとは
+分離します。Worker は元入力を読まず、親のスナップショットで指定 map 区間だけ実行します。
+CSV・Params・サンプル名の定義と外部 TAR のリクエスト形式は維持します。

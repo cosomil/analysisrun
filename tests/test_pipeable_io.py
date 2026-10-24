@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import sys
 from io import BytesIO
+from typing import Literal
+
+import pytest
 
 from analysisrun.pipeable_io import redirect_stdout_to_stderr
 
@@ -21,3 +26,36 @@ def test_redirect_stdout_to_stderr():
     stderr_buf.seek(0)
     output = stderr_buf.read().decode("utf-8")
     assert "Test message" in output
+
+
+@pytest.mark.parametrize("interactivity", ["notebook", "terminal"])
+def test_input_error_reporting_matches_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    interactivity: Literal["notebook", "terminal"] | None,
+):
+    from analysisrun import pipeable_io
+
+    monkeypatch.setattr(pipeable_io, "get_interactivity", lambda: interactivity)
+    stdout, stderr = BytesIO(), BytesIO()
+    error = ValueError("input failure")
+    with pytest.raises(
+        ValueError if interactivity == "notebook" else SystemExit
+    ) as caught:
+        pipeable_io.exit_with_error(
+            pipeable_io.ExitCodes.INVALID_USAGE,
+            "friendly message",
+            stdout,
+            stderr,
+            error,
+        )
+    if interactivity == "notebook":
+        assert caught.value is error
+        assert stderr.getvalue() == b""
+    else:
+        assert isinstance(caught.value, SystemExit)
+        assert caught.value.code == 2
+        diagnostics = stderr.getvalue().decode()
+        assert diagnostics.index("ValueError: input failure") < diagnostics.index(
+            "friendly message"
+        )
+    assert stdout.getvalue() == b""

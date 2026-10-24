@@ -6,7 +6,6 @@ pickle archives from an untrusted source. Only the main thread publishes events.
 
 from __future__ import annotations
 
-import gzip
 import json
 import logging
 import os
@@ -24,27 +23,12 @@ from queue import Empty, Full, Queue
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from types import MappingProxyType
-from typing import IO, Any, BinaryIO, Literal, Protocol, TypedDict, overload
+from typing import IO, Any, Literal, Protocol, TypedDict, overload
 
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib import figure
 
-from .env import get_interactivity
-from .helper import cowsay
-from .pipeable import (
-    Output,
-    _add_tar_binary_entry,
-    _NullOutput,
-    _save_image_bytes_to_dir,
-    _split_evenly_in_order,
-    _write_parallel_streaming_result_entries,
-)
-from .pipeable_io import (
-    ExitCodes,
-    exit_with_error_streaming,
-    redirect_stdout_to_stderr,
-)
 from .pipeline import (
     DataFrameInputSnapshot,
     Inputs,
@@ -54,8 +38,6 @@ from .pipeline import (
     Stage,
     _validate_stages,
     execute_map_segment,
-    execute_pipeline,
-    execute_sequential,
 )
 from .tar import TarEntryWriter
 
@@ -141,24 +123,24 @@ def canonical_manifest(stages: Sequence[Stage]) -> str:
     )
 
 
-class FileInputSnapshot:
+class FileInputSnapshot[I: Inputs]:
     def __init__(self, lanes: tuple[Lane, ...], paths: Mapping[int, Path]) -> None:
         self.lanes = lanes
         self.paths = MappingProxyType(dict(paths))
 
-    def restore(self, lane_id: int) -> Inputs:
+    def restore(self, lane_id: int) -> I:
         return pickle.loads(self.paths[lane_id].read_bytes())
 
-    def restore_all(self) -> Mapping[str, Inputs]:
+    def restore_all(self) -> Mapping[str, I]:
         return MappingProxyType(
             {lane.data_name: self.restore(lane.lane_id) for lane in self.lanes}
         )
 
 
 @contextmanager
-def file_snapshot(
-    inputs: Inputs, lanes: tuple[Lane, ...]
-) -> Iterator[FileInputSnapshot]:
+def file_snapshot[I: Inputs](
+    inputs: I, lanes: tuple[Lane, ...]
+) -> Iterator[FileInputSnapshot[I]]:
     with TemporaryDirectory(prefix="analysisrun-pipeline-") as directory:
         source = DataFrameInputSnapshot(inputs, lanes)
         paths = {}
@@ -172,7 +154,7 @@ def file_snapshot(
             )
             paths[lane.lane_id] = path
         del source
-        yield FileInputSnapshot(lanes, paths)
+        yield FileInputSnapshot[I](lanes, paths)
 
 
 def worker_limit() -> int:
@@ -357,7 +339,7 @@ class _WorkerOutput:
         plt.close(fig)
 
 
-def run_worker(stages: Sequence[Stage], stdin: BinaryIO, stdout: BinaryIO) -> int:
+def run_worker(stages: Sequence[Stage], stdin: IO[bytes], stdout: IO[bytes]) -> int:
     """Read the complete request before writing any response bytes."""
     entries: dict[str, bytes] = {}
     lane: WorkerLane | None = None
@@ -661,7 +643,7 @@ class MultiprocessMapExecutor:
         pool = ThreadPoolExecutor(max_workers=len(chunks))
         futures: list[Future[None]] = []
         try:
-            env = os.environ | {"ANALYSISRUN_MODE": "pipeline-worker"}
+            env = os.environ | {"ANALYSISRUN_PROCESS_ROLE": "parallel-worker"}
             for request, values in requests:
                 proc = subprocess.Popen(
                     [sys.executable, str(self.entrypoint)],
@@ -720,104 +702,51 @@ class MultiprocessMapExecutor:
                             stream.close()
 
 
-def execute_entrypoint(
-    stages: Sequence[Stage],
+def _split_evenly_in_order[T](items: list[T], chunks: int) -> list[list[T]]:
+    if chunks <= 0:
+        raise ValueError("chunks must be positive")
+    if not items:
+        return []
+
+    chunk_count = min(chunks, len(items))
+    base, extra = divmod(len(items), chunk_count)
+
+    result: list[list[T]] = []
+    start = 0
+    for idx in range(chunk_count):
+        size = base + (1 if idx < extra else 0)
+        end = start + size
+        result.append(items[start:end])
+        start = end
+    return result
+
+
+def _add_tar_binary_entry(
+    tar: TarEntryWriter,
+    name: str,
+    content: bytes,
     *,
-    entrypoint: Path,
-    params: Any = None,
-    image_analysis_results: Inputs | None = None,
-    targets: Mapping[str, str] | None = None,
-    output: Output | None = None,
-    output_dir: Path | None = None,
-    mode: str | None = None,
-    stdout: BinaryIO | None = None,
-    stderr: BinaryIO | None = None,
-) -> pd.DataFrame:
-    """Execution entrance shared by public builders and internal callers.
+    image_type: str | None = None,
+) -> None:
+    tar_info = tarfile.TarInfo(name=name)
+    tar_info.size = len(content)
+    pax_headers = {"is_file": "true"}
+    if image_type is not None:
+        pax_headers["image_type"] = image_type
+    tar_info.pax_headers = pax_headers
+    tar.addfile(tar_info, BytesIO(content))
 
-    Reconstruct stages before calling this in both parent and worker. Worker
-    dispatch precedes input loading by the caller; no parent inputs are required.
-    Notebook callers select sequential mode and provide a figure Output.
-    """
-    mode = (
-        mode
-        or os.environ.get("ANALYSISRUN_MODE")
-        or (
-            "sequential" if get_interactivity() == "notebook" else "parallel-entrypoint"
-        )
-    )
-    if mode == "sequential":
-        if image_analysis_results is None or targets is None:
-            raise ValueError("sequential execution requires inputs and targets")
-        if output is None and any(stage.kind == "map" for stage in stages):
-            raise ValueError("sequential map execution requires an Output")
-        return execute_sequential(
-            stages,
-            params=params,
-            image_analysis_results=image_analysis_results,
-            targets=targets,
-            output=output if output is not None else _NullOutput(),
-        )
-    binary_stdout: BinaryIO = stdout if stdout is not None else sys.stdout.buffer
-    binary_stderr: BinaryIO = stderr if stderr is not None else sys.stderr.buffer
-    if mode == "pipeline-worker":
-        with redirect_stdout_to_stderr(binary_stderr):
-            status = run_worker(stages, sys.stdin.buffer, binary_stdout)
-        sys.exit(status)
-    if mode not in {"parallel-entrypoint", "parallel-entrypoint-streaming"}:
-        raise ValueError(f"unsupported pipeline mode: {mode!r}")
-    if image_analysis_results is None or targets is None:
-        raise ValueError("parallel execution requires inputs and targets")
 
-    def run(on_image: ImageSink) -> pd.DataFrame:
-        executor = MultiprocessMapExecutor(stages, entrypoint, on_image)
-        return execute_pipeline(
-            stages,
-            params=params,
-            image_analysis_results=image_analysis_results,
-            targets=targets,
-            output=output if output is not None else _NullOutput(),
-            map_executor=executor,
-            snapshot_factory=file_snapshot,
-        )
+def _write_streaming_result_entries(
+    tar: TarEntryWriter,
+    result_df: pd.DataFrame,
+) -> None:
+    csv_buf = BytesIO()
+    result_df = result_df.astype(str)
+    result_df.to_csv(csv_buf, index=False)
+    _add_tar_binary_entry(tar, "result_csv", csv_buf.getvalue())
 
-    if mode == "parallel-entrypoint":
-        if output_dir is None:
-            raise ValueError("parallel-entrypoint requires output_dir")
-        try:
-            return run(
-                lambda data_name, name, data, image_type: _save_image_bytes_to_dir(
-                    name, data, output_dir
-                )
-            )
-        except Exception as exc:
-            binary_stderr.write("".join(traceback.format_exception(exc)).encode())
-            context = "\n".join(getattr(exc, "__notes__", ()))
-            message = (
-                f"解析処理に失敗しました。{context}\n担当者にお問い合わせください。"
-            )
-            binary_stderr.write((cowsay(message) + "\n").encode())
-            binary_stderr.flush()
-            raise SystemExit(ExitCodes.PROCESSING_ERROR.value) from exc
-    with (
-        gzip.GzipFile(fileobj=binary_stdout, mode="wb") as compressed,
-        writing_tar(compressed) as raw_archive,
-    ):
-        archive = _UniqueEntries(raw_archive)
-
-        def on_image(
-            data_name: str, name: str, data: bytes, image_type: str | None
-        ) -> None:
-            _add(archive, f"{data_name}/images/{name}", data, image_type)
-            compressed.flush()
-
-        try:
-            with redirect_stdout_to_stderr(binary_stderr):
-                result = run(on_image)
-            _write_parallel_streaming_result_entries(archive, result)
-        except Exception as exc:
-            logger.exception("pipeline execution failed")
-            exit_with_error_streaming(
-                ExitCodes.PROCESSING_ERROR, str(exc), archive, binary_stderr, exc
-            )
-    sys.exit(0)
+    for idx, row in result_df.iterrows():
+        data_name = row.get("data", idx)
+        json_bytes = row.to_json().encode("utf-8")
+        _add_tar_binary_entry(tar, f"{data_name!s}/result_json", json_bytes)

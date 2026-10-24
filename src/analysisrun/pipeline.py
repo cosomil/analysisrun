@@ -15,14 +15,33 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import pandas as pd
 from pydantic import BaseModel
 
-from .pipeable import Output, PreprocessArgs
+from .output import Output
 from .typing import NamedTupleLike
 
 if TYPE_CHECKING:
-    from .pipeable import ExecutionContext
+    from .context import ExecutionContext
 
 
 type Inputs = NamedTupleLike[pd.DataFrame]
+
+
+@dataclass
+class PreprocessArgs[
+    Params: BaseModel,
+    ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
+]:
+    params: Params
+    """
+    解析全体に関わるパラメータ
+    """
+    image_analysis_results: ImageAnalysisResults
+    """
+    cleansing済みの画像解析結果（DataFrame）
+    """
+    targets: Mapping[str, str]
+    """
+    解析対象データ。keyはdata_name、valueはsample_name
+    """
 
 
 @dataclass(frozen=True)
@@ -102,16 +121,16 @@ type SnapshotFactory = Callable[
 ]
 
 
-def _copy_inputs(inputs: Inputs) -> Inputs:
+def _copy_inputs[I: Inputs](inputs: I) -> I:
     return type(inputs)(*(frame.copy(deep=True) for frame in inputs))
 
 
-class DataFrameInputSnapshot:
+class DataFrameInputSnapshot[I: Inputs]:
     """Copy DataFrames, preserving NamedTuple type, but not nested object cells."""
 
-    def __init__(self, inputs: Inputs, lanes: tuple[Lane, ...]) -> None:
+    def __init__(self, inputs: I, lanes: tuple[Lane, ...]) -> None:
         self._lanes = lanes
-        self._inputs: dict[int, Inputs] = {}
+        self._inputs: dict[int, I] = {}
         names = [lane.data_name for lane in lanes]
         sources = {}
         for name, frame in inputs._asdict().items():
@@ -134,19 +153,19 @@ class DataFrameInputSnapshot:
                 frames.append(source[lane.data_name])
             self._inputs[lane.lane_id] = _copy_inputs(type(inputs)(*frames))
 
-    def restore(self, lane_id: int) -> Inputs:
+    def restore(self, lane_id: int) -> I:
         return _copy_inputs(self._inputs[lane_id])
 
-    def restore_all(self) -> Mapping[str, Inputs]:
+    def restore_all(self) -> Mapping[str, I]:
         return MappingProxyType(
             {lane.data_name: self.restore(lane.lane_id) for lane in self._lanes}
         )
 
 
 @contextmanager
-def dataframe_snapshot(
-    inputs: Inputs, lanes: tuple[Lane, ...]
-) -> Iterator[DataFrameInputSnapshot]:
+def dataframe_snapshot[I: Inputs](
+    inputs: I, lanes: tuple[Lane, ...]
+) -> Iterator[DataFrameInputSnapshot[I]]:
     yield DataFrameInputSnapshot(inputs, lanes)
 
 

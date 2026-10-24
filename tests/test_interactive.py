@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections.abc import Callable
 from io import BytesIO
 from os import getcwd
 from pathlib import Path
@@ -15,7 +18,7 @@ class Input(BaseModel):
     target: VirtualFile = Field(description="target file")
 
 
-def assert_readable_as_csv(v):
+def assert_readable_as_csv(v: Path | BytesIO):
     df = pd.read_csv(v)
     assert list(df["sample"]) == ["SampleA", "SampleB"]
 
@@ -78,7 +81,9 @@ class Test_VirtualFile:
 
 
 class _FakeQuestion:
-    def __init__(self, answers: list[str], validate):
+    def __init__(
+        self, answers: list[str], validate: Callable[[str], bool | str] | None
+    ):
         self._answers = answers
         self._validate = validate
 
@@ -91,14 +96,24 @@ class _FakeQuestion:
 
 
 def _patch_questionary_text(monkeypatch: pytest.MonkeyPatch, answers: list[str]):
-    def fake_text(message: str, default: str = "", validate=None, **kwargs):
+    def fake_text(
+        message: str,
+        default: str = "",
+        validate: Callable[[str], bool | str] | None = None,
+        **kwargs: Any,
+    ):
         return _FakeQuestion(answers, validate)
 
     monkeypatch.setattr(interactive.questionary, "text", fake_text)
 
 
 def _patch_questionary_path(monkeypatch: pytest.MonkeyPatch, answers: list[str]):
-    def fake_path(message: str, default: str = "", validate=None, **kwargs):
+    def fake_path(
+        message: str,
+        default: str = "",
+        validate: Callable[[str], bool | str] | None = None,
+        **kwargs: Any,
+    ):
         return _FakeQuestion(answers, validate)
 
     monkeypatch.setattr(interactive.questionary, "path", fake_path)

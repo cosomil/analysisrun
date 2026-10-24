@@ -19,8 +19,8 @@ class FailureImageAnalysisResults(NamedTuple):
 
 
 def analyze(
-    args: ar.AnalyzeArgs[FailureParams, FailureImageAnalysisResults],
-) -> pd.Series:
+    args: ar.MapArgs[FailureParams, FailureImageAnalysisResults, None, None],
+) -> dict[str, object]:
     lane_name = args.data_name
     raise RuntimeError(f"intentional failure during lane analysis: {lane_name}")
 
@@ -39,4 +39,4 @@ ctx = ar.read_context(
     ),
     output_dir=output_dir,
 )
-ctx.run_analysis(analyze)
+ctx.pipeline().map(analyze).finalize(lambda args: pd.DataFrame(args.values.values()))

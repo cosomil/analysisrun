@@ -1,5 +1,7 @@
 """#82 の独立した転送実験。本番 Executor ではなく、信頼済み pickle 専用。"""
 
+from __future__ import annotations
+
 import copy
 import json
 import logging
@@ -8,15 +10,16 @@ import subprocess
 import sys
 import tarfile
 import traceback
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from io import BytesIO
+from io import BytesIO, RawIOBase
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread, Timer
 from time import monotonic, sleep
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import IO, Any, NamedTuple, Protocol, cast
 
 import pandas as pd
 
@@ -43,7 +46,7 @@ class TransferError(RuntimeError):
     pass
 
 
-def dumps(value, label):
+def dumps(value: Any, label: str):
     try:
         return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as exc:
@@ -52,16 +55,16 @@ def dumps(value, label):
         ) from exc
 
 
-def copy_inputs(inputs):
+def copy_inputs[I: Inputs | Prepared](inputs: I) -> I:
     return type(inputs)(*(frame.copy(deep=True) for frame in inputs))
 
 
-def prepare(inputs):
+def prepare(inputs: Inputs | Prepared) -> Prepared:
     inputs.cells["score"] += 10
     return Prepared(inputs.cells, inputs.cells.copy(deep=True))
 
 
-def split(inputs, targets):
+def split[I: Inputs | Prepared](inputs: I, targets: dict[str, str]) -> dict[str, I]:
     lanes = {}
     for name in targets:
         frames = [frame.loc[frame["lane"] == name].copy(deep=True) for frame in inputs]
@@ -72,7 +75,11 @@ def split(inputs, targets):
 
 
 @contextmanager
-def snapshots(inputs, targets, preprocess=None):
+def snapshots(
+    inputs: Inputs | Prepared,
+    targets: dict[str, str],
+    preprocess: Callable[[Inputs | Prepared], Inputs | Prepared] | None = None,
+) -> Iterator[list[dict[str, Any]]]:
     """実行開始時に確定し、呼出元が子を回収してから context を抜ける。"""
     transformed = preprocess(copy_inputs(inputs)) if preprocess else inputs
     with TemporaryDirectory(prefix="pipeline-transfer-") as directory:
@@ -91,7 +98,9 @@ def snapshots(inputs, targets, preprocess=None):
         yield lanes
 
 
-def restore_all(lanes):
+def restore_all(
+    lanes: list[dict[str, Any]],
+) -> MappingProxyType[str, Inputs | Prepared]:
     return MappingProxyType(
         {
             lane["data_name"]: pickle.loads(Path(lane["input_path"]).read_bytes())
@@ -100,7 +109,9 @@ def restore_all(lanes):
     )
 
 
-def parent_args(lanes, params, values, synthesized):
+def parent_args(
+    lanes: list[dict[str, Any]], params: Any, values: dict[str, Any], synthesized: Any
+) -> dict[str, Any]:
     return {
         "inputs": restore_all(lanes),
         "params": copy.deepcopy(params),
@@ -109,20 +120,26 @@ def parent_args(lanes, params, values, synthesized):
     }
 
 
-def notebook_snapshot(inputs, targets, preprocess=None):
+def notebook_snapshot(
+    inputs: Inputs | Prepared,
+    targets: dict[str, str],
+    preprocess: Callable[[Inputs | Prepared], Inputs | Prepared] | None = None,
+) -> dict[str, Inputs | Prepared]:
     transformed = preprocess(copy_inputs(inputs)) if preprocess else inputs
     return {
         name: copy_inputs(lane) for name, lane in split(transformed, targets).items()
     }
 
 
-def notebook_restore(snapshot):
+def notebook_restore(
+    snapshot: dict[str, Inputs | Prepared],
+) -> MappingProxyType[str, Inputs | Prepared]:
     return MappingProxyType(
         {name: copy_inputs(lane) for name, lane in snapshot.items()}
     )
 
 
-def first_map(args):
+def first_map(args: dict[str, Any]) -> dict[str, Any]:
     # ローカル lambda を含む中間値は pickle 不可能。次 map に直接渡す。
     score = int(args["inputs"].cells["score"].iloc[0])
     args["inputs"].cells["score"] = -1
@@ -133,7 +150,7 @@ def first_map(args):
     return {"score": score, "identity": lambda: score, "history": ["first"]}
 
 
-def second_map(args):
+def second_map(args: dict[str, Any]):
     value = args["value"]
     if (
         int(args["inputs"].cells["score"].iloc[0]) != value["identity"]()
@@ -147,23 +164,23 @@ def second_map(args):
     return Feature(value["score"] + len(value["history"]))
 
 
-def echo_map(args):
+def echo_map(args: dict[str, Any]):
     return args["value"]
 
 
-def none_map(args):
+def none_map(args: dict[str, Any]):
     return None
 
 
-def fail_map(args):
+def fail_map(args: dict[str, Any]):
     raise LookupError(f"failed {args['data_name']}")
 
 
-def unpicklable_map(args):
+def unpicklable_map(args: dict[str, Any]):
     return lambda: None
 
 
-def unused_parent(args):
+def unused_parent(args: dict[str, Any]):
     raise RuntimeError("parent stage must not execute in child")
 
 
@@ -183,7 +200,9 @@ def definition():
     )
 
 
-def request_for(lanes, start=2, end=4):
+def request_for(
+    lanes: list[dict[str, Any]], start: int = 2, end: int = 4
+) -> dict[str, Any]:
     return {
         "protocol_version": 1,
         "manifest": canonical_manifest(definition()),
@@ -193,7 +212,7 @@ def request_for(lanes, start=2, end=4):
     }
 
 
-def validate(request):
+def validate(request: dict[str, Any]):
     if request["protocol_version"] != 1:
         raise ValueError("protocol_version mismatch")
     stages = definition()
@@ -219,21 +238,28 @@ def validate(request):
     return stages
 
 
-def add(tar, name, data):
+def add(tar: tarfile.TarFile, name: str, data: bytes):
     member = tarfile.TarInfo(name)
     member.size = len(data)
     tar.addfile(member, BytesIO(data))
 
 
-def flush(tar, stream):
+def flush(tar: tarfile.TarFile, stream: IO[bytes]):
     # tarfile w| は内部で record をバッファする。レーン/画像の到着を
     # 子終了より前に観測するため、残った block をここで送り出す。
-    tar.fileobj.fileobj.write(tar.fileobj.buf)
-    tar.fileobj.buf = b""
+    internal = cast(_TarStream, tar.fileobj)
+    internal.fileobj.write(internal.buf)
+    internal.buf = b""
     stream.flush()
 
 
-def write_request(stream, request, params, synthesized, values):
+def write_request(
+    stream: IO[bytes],
+    request: dict[str, Any],
+    params: Any,
+    synthesized: Any,
+    values: dict[int, Any],
+):
     with tarfile.open(fileobj=stream, mode="w|") as tar:
         add(tar, "request.json", json.dumps(request).encode())
         add(tar, "params.pkl", dumps(params, f"params stage={request['stage_start']}"))
@@ -254,7 +280,12 @@ def write_request(stream, request, params, synthesized, values):
             )
 
 
-def child(stream_in, stream_out, fault="", ack=None):
+def child(
+    stream_in: IO[bytes],
+    stream_out: IO[bytes],
+    fault: str = "",
+    ack: str | Path | None = None,
+):
     request = None
     lane = None
     stage_index = None
@@ -265,7 +296,10 @@ def child(stream_in, stream_out, fault="", ack=None):
                 for member in incoming:
                     if member.name in entries:
                         raise ValueError(f"duplicate request entry: {member.name}")
-                    entries[member.name] = incoming.extractfile(member).read()
+                    extracted = incoming.extractfile(member)
+                    if extracted is None:
+                        raise ValueError(f"request entry is not a file: {member.name}")
+                    entries[member.name] = extracted.read()
             request = json.loads(entries["request.json"])
             stages = validate(request)
             # 故意に stderr pipe 容量を超えさせ、drain の成立を検証。
@@ -277,7 +311,7 @@ def child(stream_in, stream_out, fault="", ack=None):
                 lane_id = lane["lane_id"]
                 value = pickle.loads(entries[f"lanes/{lane_id}/value.pkl"])
 
-                def output(data, name, lane_id=lane_id):
+                def output(data: bytes, name: str, lane_id: int = lane_id):
                     add(tar, f"lanes/{lane_id}/images/{name}", data)
                     flush(tar, stream_out)
 
@@ -331,28 +365,43 @@ def child(stream_in, stream_out, fault="", ack=None):
     return 0
 
 
-class TrackedReader:
+class TrackedReader(RawIOBase):
     """tarfile が許容する EOF marker 欠損も検出する小さな実験用 reader。"""
 
-    def __init__(self, stream):
+    def __init__(self, stream: IO[bytes]):
+        super().__init__()
         self.stream = stream
         self.size = 0
         self.tail = b""
 
-    def read(self, size=-1):
+    def readable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.size
+
+    def read(self, size: int = -1) -> bytes:
         data = self.stream.read(size)
         self.size += len(data)
         self.tail = (self.tail + data)[-1024:]
         return data
 
 
-def receive(stream, request, values, on_event):
+def receive(
+    stream: IO[bytes],
+    request: dict[str, Any],
+    values: dict[int, Any],
+    on_event: Callable[[str, int, Any], None],
+):
     expected = {lane["lane_id"]: lane for lane in request["lanes"]}
     seen = set()
     reader = TrackedReader(stream)
     with tarfile.open(fileobj=reader, mode="r|*", bufsize=512) as tar:
         for member in tar:
-            data = tar.extractfile(member).read()
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                raise TransferError(f"response entry is not a file: {member.name}")
+            data = extracted.read()
             if member.name == "error.json":
                 error = json.loads(data)
                 if error["protocol_version"] != 1:
@@ -393,14 +442,14 @@ def receive(stream, request, values, on_event):
 
 
 def run_child(
-    request,
-    params,
-    synthesized,
-    values,
-    on_event=lambda *args: None,
-    fault="",
-    ack=None,
-    processes=None,
+    request: dict[str, Any],
+    params: Any,
+    synthesized: Any,
+    values: dict[int, Any],
+    on_event: Callable[[str, int, Any], None] = lambda *args: None,
+    fault: str = "",
+    ack: str | Path | None = None,
+    processes: list[subprocess.Popen[bytes]] | None = None,
 ):
     """一子のみのハーネス。完了待ちの前に values を更新する。"""
     command = [sys.executable, "-m", "tests.pipeline_transfer_probe", fault]
@@ -409,6 +458,9 @@ def run_child(
     proc = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
+    stdin, stdout, stderr_stream = proc.stdin, proc.stdout, proc.stderr
+    if stdin is None or stdout is None or stderr_stream is None:
+        raise RuntimeError("child requires stdin, stdout, and stderr pipes")
     if processes is not None:
         processes.append(proc)
     stderr = bytearray()
@@ -416,15 +468,15 @@ def run_child(
 
     def write():
         try:
-            write_request(proc.stdin, request, params, synthesized, values)
+            write_request(stdin, request, params, synthesized, values)
         except Exception as exc:
             logger.exception("request transfer failed")
             write_errors.append(exc)
         finally:
-            proc.stdin.close()
+            stdin.close()
 
     def drain():
-        stderr.extend(proc.stderr.read())
+        stderr.extend(stderr_stream.read())
 
     writer = Thread(target=write)
     drainer = Thread(target=drain)
@@ -435,7 +487,7 @@ def run_child(
     watchdog.start()
     error = None
     try:
-        receive(proc.stdout, request, values, on_event)
+        receive(stdout, request, values, on_event)
     except Exception as exc:
         logger.exception("response transfer failed")
         error = exc
@@ -445,8 +497,8 @@ def run_child(
         writer.join()
         drainer.join()
         watchdog.cancel()
-        proc.stdout.close()
-        proc.stderr.close()
+        stdout.close()
+        stderr_stream.close()
     if write_errors:
         raise write_errors[0]
     if error or proc.returncode:
@@ -455,6 +507,11 @@ def run_child(
             f"stderr={stderr.decode(errors='replace')}"
         ) from error
     return stderr.decode()
+
+
+class _TarStream(Protocol):
+    fileobj: IO[bytes]
+    buf: bytes
 
 
 if __name__ == "__main__":

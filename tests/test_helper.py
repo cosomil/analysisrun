@@ -1,6 +1,10 @@
-from datetime import UTC, datetime
+from __future__ import annotations
+
+from datetime import UTC, datetime, tzinfo
 from io import BytesIO
 from pathlib import Path
+
+import pytest
 
 import analysisrun as ar
 from analysisrun import helper
@@ -10,24 +14,24 @@ from analysisrun.interactive import VirtualFile
 
 class FrozenDatetime(datetime):
     @classmethod
-    def now(cls, tz=None):
+    def now(cls, tz: tzinfo | None = None):
         value = cls(2026, 8, 22, 6, 30, 15, 123456, tzinfo=UTC)
         return value.astimezone(tz)
 
 
-def test_get_utc_timestamp(monkeypatch):
+def test_get_utc_timestamp(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(helper, "datetime", FrozenDatetime)
 
     assert ar.get_utc_timestamp() == "2026-08-22T06:30:15.123456+00:00"
 
 
-def test_get_jst_timestamp(monkeypatch):
+def test_get_jst_timestamp(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(helper, "datetime", FrozenDatetime)
 
     assert ar.get_jst_timestamp() == "2026-08-22T15:30:15.123456+09:00"
 
 
-def assert_sample_csv(v):
+def assert_sample_csv(v: dict[str, str]):
     assert v == {
         "0000": "SampleA",
         "0001": "SampleB",

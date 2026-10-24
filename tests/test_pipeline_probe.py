@@ -1,11 +1,15 @@
 """本番エンジンから独立した #81 の成立性検証。"""
 
+from __future__ import annotations
+
+from typing import Any
+
 import pytest
 
 from tests import pipeline_probe as probe
 
 
-def request_for(definition, index):
+def request_for(definition: probe.Definition, index: int) -> dict[str, Any]:
     return {
         "manifest": probe.canonical_manifest(
             (*definition.stages, probe.Stage("finalize", probe.to_result))
@@ -17,7 +21,7 @@ def request_for(definition, index):
 
 
 @pytest.mark.parametrize("with_preprocess", [True, False])
-def test_child_rebuilds_manifest_and_executes_only_second_map(with_preprocess):
+def test_child_rebuilds_manifest_and_executes_only_second_map(with_preprocess: bool):
     definition = probe.build(with_preprocess)
     request = request_for(definition, 3 if with_preprocess else 2)
     code, response, stderr = probe.run_child(request, with_preprocess=with_preprocess)
@@ -31,7 +35,7 @@ def test_child_rebuilds_manifest_and_executes_only_second_map(with_preprocess):
 @pytest.mark.parametrize(
     "mutation", ["add", "delete", "reorder", "kind", "callable", "finalize"]
 )
-def test_child_rejects_changed_definition_before_execution(mutation):
+def test_child_rejects_changed_definition_before_execution(mutation: str):
     code, response, stderr = probe.run_child(
         request_for(probe.build(), 3), mutation=mutation
     )
@@ -50,7 +54,7 @@ def test_child_rejects_preprocess_presence_mismatch():
 
 
 @pytest.mark.parametrize("index", [-1, 5, 999, True, 1.0])
-def test_child_rejects_invalid_index(index):
+def test_child_rejects_invalid_index(index: int):
     code, response, stderr = probe.run_child(request_for(probe.build(), index))
     assert code == 1
     assert response == {"error": "stage index out of range", "calls": []}
@@ -58,7 +62,7 @@ def test_child_rejects_invalid_index(index):
 
 
 @pytest.mark.parametrize("index", [0, 2, 4])
-def test_child_rejects_non_map_stage(index):
+def test_child_rejects_non_map_stage(index: int):
     code, response, stderr = probe.run_child(request_for(probe.build(), index))
     assert code == 1
     assert response == {"error": "requested stage is not map", "calls": []}
@@ -66,7 +70,7 @@ def test_child_rejects_non_map_stage(index):
 
 
 def test_building_is_immutable_and_never_calls_stages():
-    def forbidden(state):
+    def forbidden(state: probe.State):
         pytest.fail("construction executed a callable")
 
     initial = probe.Definition()
@@ -83,8 +87,10 @@ def test_building_is_immutable_and_never_calls_stages():
 
 
 @pytest.mark.parametrize("with_preprocess", [True, False])
-def test_sequential_execution_needs_no_manifest(monkeypatch, with_preprocess):
-    def forbidden(*args):
+def test_sequential_execution_needs_no_manifest(
+    monkeypatch: pytest.MonkeyPatch, with_preprocess: bool
+):
+    def forbidden(*args: Any):
         pytest.fail("sequential execution generated a manifest")
 
     monkeypatch.setattr(probe, "canonical_manifest", forbidden)
@@ -115,10 +121,10 @@ def test_zero_stages_can_finalize_initial_none_values():
 
 
 def test_synthesize_can_start_and_same_kinds_can_repeat():
-    def synthesize(state):
+    def synthesize(state: probe.State):
         return state | {"synthesized": (state["synthesized"] or 0) + 1}
 
-    def map_value(state):
+    def map_value(state: probe.State):
         return state | {"value": (state["value"] or 0) + state["synthesized"]}
 
     definition = (

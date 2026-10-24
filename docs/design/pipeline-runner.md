@@ -3,8 +3,7 @@
 `src/analysisrun/pipeline.py` は、[#81](pipeline.md) のステージ列と
 [#82](pipeline-transfer.md) の状態契約を実行する内部エンジン。
 公開ビルダーと ExecutionContext への接続は #86 で実装した。
-[公開 API](../pipeline.md) を参照。既存 API の移行は #87 で行う。
-既存の `run_analysis` / `run_analysis_with_preprocess` は変更しない。
+[公開 API](../pipeline.md) を参照。
 
 ## 呼び出しと責務
 
@@ -81,11 +80,11 @@ Executor と Snapshot の独立した注入を検証する。
 
 ## 子プロセス Map Executor（#84）
 
-`analysisrun.pipeline_parallel` は内部の `MultiprocessMapExecutor` と
+`analysisrun.pipeline_worker` は内部の `MultiprocessMapExecutor` と
 `file_snapshot` を提供する。Runner の注入点は変更しない。最低 Python は 3.13。
 公開 Builder と `read_context()` への接続は #86〜#87 で行うため、現在は同じ
 entrypoint で内部 Stage 列を再構築し、`execute_entrypoint()` へ渡す。
-`pipeline-worker` モードでは、親の入力読込より先にこの入口へ分岐する。
+`parallel-worker` プロセスロールでは、親の入力読込より先にこの入口へ分岐する。
 入力・中間値のクラスは子でも import 可能なモジュールに定義する。
 
 - `file_snapshot` は preprocess 後の入力をレーン ID 別の pickle ファイルに一度保存する。
@@ -107,8 +106,8 @@ entrypoint で内部 Stage 列を再構築し、`execute_entrypoint()` へ渡す
   全通信スレッドを回収して例外を返す。受信済みの画像・value は取り消さない。
   `error.json`、重複・担当外・不足の value、壊れた pickle/TAR、異常終了を拒否する。
 
-`execute_entrypoint` の `parallel-entrypoint` は画像を `output_dir` に保存し、
-最終 DataFrame を返す。`parallel-entrypoint-streaming` は既存と同じ gzip TAR に
+`execute_entrypoint` の `interactive` は画像を `output_dir` に保存し、
+最終 DataFrame を返す。`streaming` は既存と同じ gzip TAR に
 画像、`result_csv`、レーン別 `result_json` を書き、正常終端して `sys.exit(0)` する。
 失敗時は最後のデータエントリに UTF-8 の `error` を書き、正常終端して非ゼロ終了する。
 内部 worker の構造化 `error.json` とは別形式。Notebook は既定で逐次実行を選び、
@@ -125,9 +124,11 @@ Snapshot の共有・寿命、worker 停止、通信異常、外部 TAR の終�
 
 ## 型チェック
 
-`uv run basedpyright` で `pipeline.py` / `pipeline_parallel.py` の型を確認する。
+`uv run basedpyright` でソース・テスト・サンプルを含むリポジトリ全体の型を確認する。
 開発依存関係に basedpyright を含め、引数の注釈漏れ・不明な引数型・ジェネリック型の
 型引数漏れもエラーとして検出する。
+意図的な型エラーを含む `tests/typing/pipeline_invalid.py` は通常チェックから除外し、
+`uv run pytest tests/test_pipeline_typing.py` で期待する診断位置・種類を検証する。
 
 Worker のリクエストは TypedDict、内部イベントはタグ付き tuple、TAR への書き込みと
 バイナリストリームは必要な操作を表す Protocol で定義する。
@@ -137,3 +138,6 @@ Any を使用する。公開 Builder のジェネリック型への接続は #86
 `execute_entrypoint` は Worker のときだけ親の入力・対象を省略できる。
 親の実行では inputs と targets、逐次 map 実行では Output を必須とし、
 不足時はステージ実行前に ValueError を送出する。
+
+親の入力構築は context.py / input.py、Output は output.py、Worker 通信は
+pipeline_worker.py、実行モードと外部応答は pipeline_entrypoint.py が担う。

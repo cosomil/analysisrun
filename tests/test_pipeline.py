@@ -1,12 +1,18 @@
+from __future__ import annotations
+
 import traceback
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import pandas as pd
 import pytest
+from matplotlib.figure import Figure
 from pandas.testing import assert_frame_equal
 
+from analysisrun import MapArgs, PreprocessArgs, SynthesizeArgs
+from analysisrun.output import _NullOutput
 from analysisrun.pipeline import (
     DataFrameInputSnapshot,
     Lane,
@@ -17,6 +23,7 @@ from analysisrun.pipeline import (
     execute_pipeline,
     execute_sequential,
 )
+from analysisrun.pipeline import Inputs as PipelineInputs
 
 
 class Inputs(NamedTuple):
@@ -43,27 +50,27 @@ def inputs():
     )
 
 
-def run(stages, inputs, **kwargs):
+def run(stages: Sequence[Stage], inputs: Inputs, **kwargs: Any):
     return execute_sequential(
         stages,
         params={"history": []},
         image_analysis_results=inputs,
         targets={"b": "same sample", "a": "same sample"},
-        output=lambda *args: None,
+        output=_NullOutput(),
         **kwargs,
     )
 
 
 @pytest.mark.parametrize("with_preprocess", [False, True])
-def test_pipeline_accepts_data_only_lane_inputs(with_preprocess):
+def test_pipeline_accepts_data_only_lane_inputs(with_preprocess: bool):
     inputs = Inputs(pd.DataFrame({"Data": ["a", "unused", "b", "a"]}))
     calls = []
 
-    def prepare(args):
+    def prepare(args: PreprocessArgs[Any, Any]):
         frame = args.image_analysis_results.cells.assign(score=[10, 100, 20, 30])
         return Prepared(frame, frame[["Data"]])
 
-    def mapping(args):
+    def mapping(args: MapArgs[Any, Any, Any, Any]):
         calls.append(args.data_name)
         data = args.image_analysis_results
         assert isinstance(data, Prepared if with_preprocess else Inputs)
@@ -74,11 +81,12 @@ def test_pipeline_accepts_data_only_lane_inputs(with_preprocess):
             ["Data", "score"] if with_preprocess else ["Data"]
         )
         if with_preprocess:
+            assert isinstance(data, Prepared)
             assert list(data.spots.columns) == ["Data"]
             return int(data.cells.score.sum())
         return len(data.cells)
 
-    def finalize(args):
+    def finalize(args: SynthesizeArgs[Any, Any, Any, Any]):
         assert list(args.image_analysis_results) == ["b", "a"]
         return pd.DataFrame(
             {"name": list(args.values), "value": list(args.values.values())}
@@ -118,7 +126,7 @@ def test_snapshot_ignores_scanner_column_contents():
 @pytest.mark.parametrize("targets", [{}, {"a": "A"}])
 @pytest.mark.parametrize("with_preprocess", [False, True])
 def test_missing_data_column_identifies_input_before_stages(
-    field, targets, with_preprocess
+    field: str, targets: dict[str, str], with_preprocess: bool
 ):
     frame = pd.DataFrame({"Data": ["a"], "score": [1]})
     prepared = Prepared(
@@ -128,7 +136,11 @@ def test_missing_data_column_identifies_input_before_stages(
         }
     )
 
-    def forbidden(args):
+    def forbidden(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         pytest.fail("stage ran with missing Data column")
 
     stages = [Stage("preprocess", lambda a: prepared)] if with_preprocess else []
@@ -145,12 +157,12 @@ def test_missing_data_column_identifies_input_before_stages(
             params={},
             image_analysis_results=Inputs(frame) if with_preprocess else prepared,
             targets=targets,
-            output=lambda *a: None,
+            output=_NullOutput(),
         )
 
 
 @pytest.mark.parametrize("field", ["cells", "spots"])
-def test_snapshot_rejects_missing_lane_in_each_minimal_input(field):
+def test_snapshot_rejects_missing_lane_in_each_minimal_input(field: str):
     frame = pd.DataFrame({"Data": ["a", "b"]})
     inputs = Prepared(
         **{
@@ -163,7 +175,9 @@ def test_snapshot_rejects_missing_lane_in_each_minimal_input(field):
 
 
 @pytest.mark.parametrize("preprocess", [False, True])
-def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
+def test_qc_feedback_copies_and_call_order(
+    inputs: Inputs, monkeypatch: pytest.MonkeyPatch, preprocess: bool
+):
     # Neither input object cells nor intermediate/final values require pickle.
     import pickle
 
@@ -175,11 +189,15 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
     expected_type = Prepared if preprocess else Inputs
     offset = 10 if preprocess else 0
 
-    def check(args):
+    def check(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         assert args.params == {"history": []}
         args.params["history"].append("mutated")
 
-    def prepare(args):
+    def prepare(args: PreprocessArgs[Any, Any]):
         check(args)
         calls.append("preprocess")
         assert list(args.targets.items()) == [
@@ -187,13 +205,13 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
             ("a", "same sample"),
         ]
         with pytest.raises(TypeError):
-            args.targets["new"] = "sample"
+            cast(dict[str, str], args.targets)["new"] = "sample"
         args.image_analysis_results.cells["score"] += 10
         return Prepared(
             args.image_analysis_results.cells, args.image_analysis_results.cells.copy()
         )
 
-    def first(args):
+    def first(args: MapArgs[Any, Any, Any, Any]) -> dict[str, Any]:
         check(args)
         calls.append((args.data_name, "first"))
         assert args.sample_name == "same sample"
@@ -206,7 +224,7 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
         identities[args.data_name] = value
         return value
 
-    def second(args):
+    def second(args: MapArgs[Any, Any, Any, Any]) -> Any:
         check(args)
         calls.append((args.data_name, "second"))
         assert args.value is identities[args.data_name]
@@ -216,7 +234,7 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
         args.value["history"].append("second")
         return args.value
 
-    def qc(args):
+    def qc(args: SynthesizeArgs[Any, Any, Any, Any]) -> dict[str, Any]:
         check(args)
         calls.append("qc")
         assert list(args.values) == list(args.image_analysis_results) == ["b", "a"]
@@ -224,16 +242,16 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
         for name, value in args.values.items():
             assert value is identities[name]
         with pytest.raises(TypeError):
-            args.values["a"] = None
+            cast(dict[str, Any], args.values)["a"] = None
         with pytest.raises(TypeError):
-            del args.image_analysis_results["b"]
+            del cast(dict[str, Any], args.image_analysis_results)["b"]
         for lane in args.image_analysis_results.values():
             for frame in lane:
                 frame["score"] = -99
         shared.append({"threshold": min(v["get"]() for v in args.values.values())})
         return shared[0]
 
-    def correct(args):
+    def correct(args: MapArgs[Any, Any, Any, Any]):
         check(args)
         calls.append((args.data_name, "correct"))
         assert args.synthesized is shared[0]
@@ -242,7 +260,7 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
         )
         return args.value["get"]() - args.synthesized["threshold"]
 
-    def finalize(args):
+    def finalize(args: SynthesizeArgs[Any, Any, Any, Any]):
         check(args)
         calls.append("finalize")
         assert args.synthesized is shared[0]
@@ -278,29 +296,29 @@ def test_qc_feedback_copies_and_call_order(inputs, monkeypatch, preprocess):
 @pytest.mark.parametrize("targets", [{}, {"a": "sample"}])
 @pytest.mark.parametrize("with_map", [False, True])
 def test_initial_state_consecutive_syntheses_and_none_updates(
-    inputs, targets, with_map
+    inputs: Inputs, targets: dict[str, str], with_map: bool
 ):
     seen = []
 
-    def first(args):
+    def first(args: SynthesizeArgs[Any, Any, Any, Any]) -> dict[str, Any]:
         assert dict(args.values) == dict.fromkeys(targets)
         assert args.synthesized is None
         seen.append("first")
         return {"state": []}
 
-    def second(args):
+    def second(args: MapArgs[Any, Any, Any, Any]):
         assert args.synthesized == {"state": []}
         seen.append("second")
 
-    def mapping(args):
+    def mapping(args: MapArgs[Any, Any, Any, Any]):
         assert args.value is args.synthesized is None
         seen.append("map")
         return "value"
 
-    def reset(args):
+    def reset(args: MapArgs[Any, Any, Any, Any]):
         assert args.value == "value"
 
-    def final(args):
+    def final(args: SynthesizeArgs[Any, Any, Any, Any]):
         assert args.synthesized is None
         assert dict(args.values) == dict.fromkeys(targets)
         return pd.DataFrame()
@@ -314,13 +332,13 @@ def test_initial_state_consecutive_syntheses_and_none_updates(
         params={},
         image_analysis_results=inputs,
         targets=targets,
-        output=lambda *a: None,
+        output=_NullOutput(),
     )
     assert seen == ["first", "second"] + (["map"] if targets and with_map else [])
 
 
-def test_finalize_only(inputs):
-    def final(args):
+def test_finalize_only(inputs: Inputs):
+    def final(args: SynthesizeArgs[Any, Any, Any, Any]):
         assert dict(args.values) == {"b": None, "a": None}
         assert args.synthesized is None
         return pd.DataFrame()
@@ -328,7 +346,7 @@ def test_finalize_only(inputs):
     run([Stage("finalize", final)], inputs)
 
 
-def test_snapshot_is_fixed_before_first_synthesize_and_reusable(inputs):
+def test_snapshot_is_fixed_before_first_synthesize_and_reusable(inputs: Inputs):
     lanes = (Lane(0, "a", "A"), Lane(1, "b", "B"))
     snapshot = DataFrameInputSnapshot(inputs, lanes)
     inputs.cells["score"] = 500
@@ -336,11 +354,11 @@ def test_snapshot_is_fixed_before_first_synthesize_and_reusable(inputs):
     restored.cells["score"] = -1
     assert snapshot.restore(0).cells.score.iloc[0] == 1
 
-    def synthesize(args):
+    def synthesize(args: SynthesizeArgs[Any, Any, Any, Any]):
         for lane in args.image_analysis_results.values():
             lane.cells["score"] = -100
 
-    def mapping(args):
+    def mapping(args: MapArgs[Any, Any, Any, Any]):
         assert args.image_analysis_results.cells.score.iloc[0] == 500
         return args.image_analysis_results.cells.score.iloc[0]
 
@@ -357,10 +375,10 @@ def test_snapshot_is_fixed_before_first_synthesize_and_reusable(inputs):
     assert result.score.tolist() == [500, 500]
 
 
-def test_preprocess_failure_has_no_snapshot_or_later_side_effects(inputs):
+def test_preprocess_failure_has_no_snapshot_or_later_side_effects(inputs: Inputs):
     events = []
 
-    def prepare(args):
+    def prepare(args: PreprocessArgs[Any, Any]):
         args.image_analysis_results.cells["score"] = -1
         args.params["history"].append("changed")
         raise LookupError("preprocess failure")
@@ -375,7 +393,7 @@ def test_preprocess_failure_has_no_snapshot_or_later_side_effects(inputs):
             params=params,
             image_analysis_results=inputs,
             targets={"a": "A"},
-            output=lambda *a: None,
+            output=_NullOutput(),
             map_executor=SequentialMapExecutor(),
             snapshot_factory=tracking_factory(events),
         )
@@ -385,10 +403,16 @@ def test_preprocess_failure_has_no_snapshot_or_later_side_effects(inputs):
 
 
 @pytest.mark.parametrize("kind", ["synthesize", "finalize"])
-def test_snapshot_closed_on_parent_failure(inputs, kind):
+def test_snapshot_closed_on_parent_failure(
+    inputs: Inputs, kind: Literal["preprocess", "map", "synthesize", "finalize"]
+):
     events = []
 
-    def fail(args):
+    def fail(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         assert events == ["open"]
         raise LookupError("parent")
 
@@ -401,32 +425,41 @@ def test_snapshot_closed_on_parent_failure(inputs, kind):
             params={},
             image_analysis_results=inputs,
             targets={"a": "A"},
-            output=lambda *a: None,
+            output=_NullOutput(),
             map_executor=SequentialMapExecutor(),
             snapshot_factory=tracking_factory(events),
         )
     assert events == ["open", "close"]
 
 
-def test_segment_failure_preserves_completed_lanes_and_images(inputs):
+def test_segment_failure_preserves_completed_lanes_and_images(inputs: Inputs):
     events = []
     captured = []
 
     class RecordingExecutor(SequentialMapExecutor):
-        def execute(self, segment, context, on_value):
+        def execute(
+            self,
+            segment: MapSegment,
+            context: MapExecutionContext,
+            on_value: Callable[[int, Any], None],
+        ):
             captured.append(context.values)
             super().execute(segment, context, on_value)
 
-    def first(args):
-        args.output(args.data_name)
+    def first(args: MapArgs[Any, Any, Any, Any]):
+        args.output(Figure(), args.data_name, "png")
         return "intermediate"
 
-    def second(args):
+    def second(args: MapArgs[Any, Any, Any, Any]):
         if args.data_name == "a":
             raise LookupError("failed a")
         return "complete"
 
-    def forbidden(args):
+    def forbidden(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         pytest.fail("crossed a failed segment")
 
     with pytest.raises(LookupError, match="failed a"):
@@ -442,7 +475,7 @@ def test_segment_failure_preserves_completed_lanes_and_images(inputs):
             params={},
             image_analysis_results=inputs,
             targets={"b": "B", "a": "A"},
-            output=events.append,
+            output=lambda fig, name, image_type, **kwargs: events.append(name),
             map_executor=RecordingExecutor(),
             snapshot_factory=tracking_factory([]),
         )
@@ -451,12 +484,14 @@ def test_segment_failure_preserves_completed_lanes_and_images(inputs):
 
 
 @pytest.mark.parametrize("kind", ["synthesize", "finalize"])
-def test_parent_failure_keeps_referenced_mutations_and_stops(inputs, kind):
+def test_parent_failure_keeps_referenced_mutations_and_stops(
+    inputs: Inputs, kind: Literal["preprocess", "map", "synthesize", "finalize"]
+):
     value = []
     shared = []
     views = []
 
-    def fail(args):
+    def fail(args: SynthesizeArgs[Any, Any, Any, Any]):
         views.append(args.values)
         assert args.values["a"] is value
         assert args.synthesized is shared
@@ -464,7 +499,11 @@ def test_parent_failure_keeps_referenced_mutations_and_stops(inputs, kind):
         args.synthesized.append("changed")
         raise LookupError("parent failure")
 
-    def forbidden(args):
+    def forbidden(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         pytest.fail("continued after failure")
 
     stages = [
@@ -480,7 +519,7 @@ def test_parent_failure_keeps_referenced_mutations_and_stops(inputs, kind):
     assert value == shared == ["changed"]
 
 
-def test_callback_failure_aborts_before_next_lane(inputs):
+def test_callback_failure_aborts_before_next_lane(inputs: Inputs):
     events = []
     lanes = (Lane(0, "a", "A"), Lane(1, "b", "B"))
     context = MapExecutionContext(
@@ -489,14 +528,14 @@ def test_callback_failure_aborts_before_next_lane(inputs):
         {},
         {"a": None, "b": None},
         None,
-        lambda *a: None,
+        _NullOutput(),
     )
 
-    def callback(lane_id, value):
+    def callback(lane_id: int, value: Any):
         events.append((lane_id, value))
         raise LookupError("callback")
 
-    def mapping(args):
+    def mapping(args: MapArgs[Any, Any, Any, Any]):
         events.append(args.data_name)
 
     with pytest.raises(LookupError, match="callback"):
@@ -506,9 +545,9 @@ def test_callback_failure_aborts_before_next_lane(inputs):
     assert events == ["a", (0, None)]
 
 
-def tracking_factory(events):
+def tracking_factory(events: list[str]):
     @contextmanager
-    def factory(inputs, lanes):
+    def factory(inputs: PipelineInputs, lanes: tuple[Lane, ...]):
         events.append("open")
         try:
             yield DataFrameInputSnapshot(inputs, lanes)
@@ -519,12 +558,14 @@ def tracking_factory(events):
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_injected_executor_absolute_ranges_and_snapshot_lifetime(inputs, fail):
+def test_injected_executor_absolute_ranges_and_snapshot_lifetime(
+    inputs: Inputs, fail: bool
+):
     events = []
     instances = []
 
     @contextmanager
-    def factory(data, lanes):
+    def factory(data: PipelineInputs, lanes: tuple[Lane, ...]):
         events.append("open")
         # Deliberately no restore(lane_id): Runner only needs restore_all.
         snapshot = DataFrameInputSnapshot(data, lanes)
@@ -534,7 +575,12 @@ def test_injected_executor_absolute_ranges_and_snapshot_lifetime(inputs, fail):
             events.append("close")
 
     class Executor:
-        def execute(self, segment, context, on_value):
+        def execute(
+            self,
+            segment: MapSegment,
+            context: MapExecutionContext,
+            on_value: Callable[[int, Any], None],
+        ):
             instances.append(self)
             assert events[-1] != "close"
             events.append((segment.start, segment.end))
@@ -575,14 +621,18 @@ def test_injected_executor_absolute_ranges_and_snapshot_lifetime(inputs, fail):
         assert instances[0] is instances[1]
 
 
-def test_missing_preprocessed_lane_rejected_before_any_stage(inputs):
-    def prepare(args):
+def test_missing_preprocessed_lane_rejected_before_any_stage(inputs: Inputs):
+    def prepare(args: PreprocessArgs[Any, Any]):
         return Prepared(
             args.image_analysis_results.cells,
             args.image_analysis_results.cells.query("Data == 'a'"),
         )
 
-    def forbidden(args):
+    def forbidden(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         pytest.fail("missing lane passed validation")
 
     with pytest.raises(ValueError, match="missing lane: 'b'"):
@@ -598,7 +648,7 @@ def test_missing_preprocessed_lane_rejected_before_any_stage(inputs):
 
 
 @pytest.mark.parametrize("result", [None, 1, pd.Series([1])])
-def test_finalize_requires_dataframe(inputs, result):
+def test_finalize_requires_dataframe(inputs: Inputs, result: Any):
     with pytest.raises(TypeError, match="finalize must return a pandas DataFrame"):
         run([Stage("finalize", lambda a: result)], inputs)
 
@@ -614,8 +664,14 @@ def test_finalize_requires_dataframe(inputs, result):
         ["unknown", "finalize"],
     ],
 )
-def test_invalid_definition_rejected_before_side_effects(inputs, kinds):
-    def forbidden(args):
+def test_invalid_definition_rejected_before_side_effects(
+    inputs: Inputs, kinds: list[Any]
+):
+    def forbidden(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         pytest.fail("invalid definition ran")
 
     with pytest.raises(ValueError):
@@ -625,11 +681,19 @@ def test_invalid_definition_rejected_before_side_effects(inputs, kinds):
 @pytest.mark.parametrize(
     "kind,index", [("preprocess", 0), ("map", 2), ("synthesize", 3), ("finalize", 4)]
 )
-def test_stage_failure_preserves_exception_and_adds_context(inputs, kind, index):
+def test_stage_failure_preserves_exception_and_adds_context(
+    inputs: Inputs,
+    kind: Literal["preprocess", "map", "synthesize", "finalize"],
+    index: int,
+):
     error = LookupError("original failure")
     called = []
 
-    def fail(args):
+    def fail(
+        args: PreprocessArgs[Any, Any]
+        | MapArgs[Any, Any, Any, Any]
+        | SynthesizeArgs[Any, Any, Any, Any],
+    ):
         raise error
 
     stages = [

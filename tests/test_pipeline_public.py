@@ -1,34 +1,46 @@
+from __future__ import annotations
+
 import json
 import os
 import subprocess
 import sys
 import tarfile
+import traceback
 from dataclasses import FrozenInstanceError
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Literal, Never, cast
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+from matplotlib.figure import Figure
 
 from analysisrun import (
     ExecutionContext,
     InitialPipeline,
+    ManualInput,
+    MapArgs,
     PipelineBuilder,
-    pipeable,
+    PreprocessArgs,
+    SynthesizeArgs,
     read_context,
 )
-from tests.test_pipeable import (
+from analysisrun import (
+    context as context_module,
+)
+from tests.support import read_tar_member
+from tests.test_input import (
     IMAGE_ANALYSIS_RESULT_CSV,
     SAMPLES_CSV,
     ImageResults,
-    ManualInput,
     Params,
     _build_streaming_input_tar,
     _force_interactivity,
 )
 
 
-def context(monkeypatch, tmp_path):
+def context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     _force_interactivity(monkeypatch, "notebook")
     return read_context(
         Params,
@@ -42,7 +54,111 @@ def context(monkeypatch, tmp_path):
     )
 
 
-def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
+@pytest.mark.parametrize("stage", ["preprocess", "map", "synthesize", "finalize"])
+def test_notebook_stage_errors_propagate_without_duplicate_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stage: Literal["preprocess", "map", "synthesize", "finalize"],
+):
+    ctx = context(monkeypatch, tmp_path)
+    error = LookupError("notebook stage failure")
+
+    def fail(args: object) -> Never:
+        raise error
+
+    builder = ctx.pipeline()
+    if stage == "preprocess":
+        pipeline = builder.preprocess(fail)
+    elif stage == "map":
+        pipeline = builder.map(fail)
+    elif stage == "synthesize":
+        pipeline = builder.synthesize(fail)
+    else:
+        pipeline = builder
+    with pytest.raises(LookupError) as caught:
+        pipeline.finalize(
+            fail if stage == "finalize" else lambda args: pytest.fail("continued")
+        )
+    assert caught.value is error
+    assert traceback.extract_tb(error.__traceback__)[-1].name == "fail"
+    assert any(f"stage={stage} stage_index=0" in note for note in error.__notes__)
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize("fail_after_display", [False, True])
+def test_notebook_output_displays_without_saving_and_survives_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    fail_after_display: bool,
+):
+    output_dir = tmp_path / "images"
+    ctx = context(monkeypatch, output_dir)
+    figures: list[Figure] = []
+    shown: list[Figure] = []
+    open_figures = set(plt.get_fignums())
+    error = LookupError("failure after display")
+
+    def show(*, block: bool | None = None) -> None:
+        assert block is False
+        figure = figures[-1]
+        assert len(figure.axes) == 1
+        assert len(figure.axes[0].lines) == 1
+        shown.append(figure)
+
+    monkeypatch.setattr(plt, "show", show)
+    monkeypatch.setattr(
+        Figure, "savefig", lambda *args, **kwargs: pytest.fail("saved an image")
+    )
+
+    def mapping(args: MapArgs[Params, ImageResults, None, None]) -> int:
+        figure, ax = plt.subplots()
+        ax.plot([0, 1], [1, 2])
+        figures.append(figure)
+        args.output(figure, f"nested/{args.data_name}.png", "qc", format="png")
+        return len(args.image_analysis_results.activity_spots)
+
+    def finalize(
+        args: SynthesizeArgs[Params, ImageResults, int, None],
+    ) -> pd.DataFrame:
+        if fail_after_display:
+            raise error
+        return pd.DataFrame({"rows": list(args.values.values())})
+
+    pipeline = ctx.pipeline().map(mapping)
+    if fail_after_display:
+        with pytest.raises(LookupError) as caught:
+            pipeline.finalize(finalize)
+        assert caught.value is error
+    else:
+        result = pipeline.finalize(finalize)
+        assert result.rows.tolist() == [26, 24]
+    assert shown == figures
+    assert len(shown) == 2
+    assert all(not figure.axes for figure in figures)
+    assert set(plt.get_fignums()) == open_figures
+    assert not output_dir.exists()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_notebook_input_errors_propagate_without_duplicate_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    _force_interactivity(monkeypatch, "notebook")
+    with pytest.raises(RuntimeError, match="manual_input"):
+        read_context(Params, ImageResults, output_dir=tmp_path)
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_builders_are_lazy_immutable_and_reusable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     ctx = context(monkeypatch, tmp_path)
     assert isinstance(ctx, ExecutionContext)
     initial = ctx.pipeline()
@@ -50,11 +166,11 @@ def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
     assert not isinstance(initial, PipelineBuilder)
     calls = []
 
-    def prepare(args):
+    def prepare(args: PreprocessArgs[Params, ImageResults]) -> ImageResults:
         calls.append("prepare")
         return args.image_analysis_results
 
-    def mapping(args):
+    def mapping(args: MapArgs[Params, ImageResults, None, None]) -> int:
         assert args.value is args.synthesized is None
         return args.params.threshold
 
@@ -62,7 +178,7 @@ def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
     other = initial.synthesize(lambda a: 3)
     assert calls == []
     with pytest.raises(FrozenInstanceError):
-        branch._stages = ()
+        type(branch).__setattr__(branch, "_stages", ())
     for builder in [initial.preprocess(prepare), initial.map(mapping), other]:
         with pytest.raises(AttributeError):
             builder.preprocess(prepare)
@@ -79,10 +195,12 @@ def test_builders_are_lazy_immutable_and_reusable(monkeypatch, tmp_path):
         lambda a: pd.DataFrame({"v": list(a.values.values())})
     ).v.tolist() == [None, None]
     with pytest.raises(TypeError, match="finalize must return"):
-        initial.finalize(lambda a: 1)
+        initial.finalize(cast(Any, lambda a: 1))
 
 
-def test_public_pipeline_consecutive_stages(monkeypatch, tmp_path):
+def test_public_pipeline_consecutive_stages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     ctx = context(monkeypatch, tmp_path)
     result = (
         ctx.pipeline()
@@ -103,20 +221,27 @@ def test_public_pipeline_consecutive_stages(monkeypatch, tmp_path):
     assert result.v.tolist() == [3, 3]
 
 
-def test_worker_read_context_skips_all_parent_input_loading(monkeypatch):
-    monkeypatch.setenv("ANALYSISRUN_MODE", "pipeline-worker")
+def test_worker_read_context_skips_all_parent_input_loading(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("ANALYSISRUN_PROCESS_ROLE", "parallel-worker")
     monkeypatch.setattr(
-        pipeable, "_get_image_analysis_specs", lambda *a: pytest.fail("read specs")
+        context_module,
+        "_get_image_analysis_specs",
+        lambda *a: pytest.fail("read specs"),
     )
     ctx = read_context(Params, ImageResults, stdin=BytesIO(b"not a TAR"))
-    assert ctx.mode == "pipeline-worker"
-    assert ctx._pipeline_inputs is None
+    assert ctx.mode is None
+    assert ctx.process_role == "parallel-worker"
+    assert ctx.image_analysis_results is None
     assert isinstance(ctx.pipeline(), InitialPipeline)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("preprocess", [False, True])
-def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
+def test_public_entrypoint_end_to_end(
+    tmp_path: Path, streaming: bool, preprocess: bool
+):
     env = {**os.environ, "TEST_OUTPUT": str(tmp_path), "ANALYSISRUN_MAX_WORKERS": "2"}
     env["TEST_PREPROCESS"] = str(int(preprocess))
     env.pop("ANALYSISRUN_MODE", None)
@@ -142,7 +267,7 @@ def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
     if streaming:
         with tarfile.open(fileobj=BytesIO(completed.stdout), mode="r:gz") as archive:
             entries = {
-                member.name: archive.extractfile(member).read()
+                member.name: read_tar_member(archive, member)
                 for member in archive
                 if member.isfile()
             }
@@ -157,3 +282,109 @@ def test_public_entrypoint_end_to_end(tmp_path, streaming, preprocess):
         assert json.loads((tmp_path / "result.json").read_text()) == expected
         assert (tmp_path / "0000.png").exists()
         assert (tmp_path / "0001.png").exists()
+
+
+def test_preprocess_example_aggregation_matches_expected_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from example.preprocess import __main__ as example
+
+    _force_interactivity(monkeypatch, "notebook")
+    ctx = read_context(
+        example.Params,
+        example.ImageAnalysisResults,
+        manual_input=ManualInput(
+            example.Params(threshold=3),
+            {"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+            SAMPLES_CSV,
+        ),
+        output_dir=tmp_path,
+    )
+    result = (
+        ctx.pipeline()
+        .preprocess(example.preprocess)
+        .synthesize(example.synthesize)
+        .map(example.analyze)
+        .finalize(example.postprocess)
+    )
+    expected = pd.read_csv(example.OUTPUT_DIR / "result.csv", dtype={"data": str})
+    pd.testing.assert_frame_equal(result[expected.columns], expected)
+
+
+def test_context_cleansing_precedes_one_preprocess_and_is_not_reapplied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from typing import NamedTuple
+
+    from analysisrun import image_analysis_result_spec
+    from analysisrun.cleansing import CleansedData
+
+    _force_interactivity(monkeypatch, "notebook")
+    calls = []
+
+    def cleanse(data: pd.DataFrame | CleansedData):
+        data = data if isinstance(data, pd.DataFrame) else data._data
+        calls.append("cleanse")
+        return CleansedData(data.loc[data.Entity == "Activity Spots"])
+
+    class Source(NamedTuple):
+        activity_spots: pd.DataFrame = image_analysis_result_spec("spots", cleanse)
+
+    class Prepared(NamedTuple):
+        renamed: pd.DataFrame
+
+    ctx = read_context(
+        Params,
+        Source,
+        manual_input=ManualInput(
+            Params(),
+            {"activity_spots": IMAGE_ANALYSIS_RESULT_CSV},
+            SAMPLES_CSV,
+        ),
+        output_dir=tmp_path,
+    )
+    assert calls == ["cleanse"]
+
+    def prepare(args: PreprocessArgs[Params, Source]) -> Prepared:
+        calls.append("preprocess")
+        return Prepared(
+            args.image_analysis_results.activity_spots.drop(columns=["Entity"]).assign(
+                Value=1
+            )
+        )
+
+    def mapping(args: MapArgs[Params, Prepared, None, int]) -> dict[str, str | int]:
+        assert args.image_analysis_results.renamed.Value.eq(1).all()
+        assert args.synthesized == 50
+        return {
+            "data": args.data_name,
+            "rows": len(args.image_analysis_results.renamed),
+        }
+
+    def shared[V, S](args: SynthesizeArgs[Params, Prepared, V, S]) -> int:
+        assert all(
+            "Entity" not in value.renamed
+            for value in args.image_analysis_results.values()
+        )
+        return sum(len(value.renamed) for value in args.image_analysis_results.values())
+
+    def finalize(
+        args: SynthesizeArgs[Params, Prepared, dict[str, str | int], int],
+    ) -> pd.DataFrame:
+        assert shared(args) == args.synthesized == 50
+        return pd.DataFrame(args.values.values())
+
+    result = (
+        ctx.pipeline()
+        .preprocess(prepare)
+        .synthesize(shared)
+        .map(mapping)
+        .finalize(finalize)
+    )
+    assert calls == ["cleanse", "preprocess"]
+    assert result.to_dict("records") == [
+        {"data": "0000", "rows": 26},
+        {"data": "0001", "rows": 24},
+    ]
+    assert ctx.image_analysis_results is not None
+    assert "Entity" in ctx.image_analysis_results.activity_spots

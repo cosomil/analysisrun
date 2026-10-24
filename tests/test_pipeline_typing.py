@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import re
 import subprocess
@@ -8,7 +10,7 @@ import pytest
 
 
 @pytest.mark.parametrize("name", ["pipeline_valid.py", "pipeline_invalid.py"])
-def test_public_pipeline_types(tmp_path, name):
+def test_public_pipeline_types(tmp_path: Path, name: str):
     root = Path(__file__).resolve().parents[1]
     source = root / "tests" / "typing" / name
     config = tmp_path / "pyrightconfig.json"
