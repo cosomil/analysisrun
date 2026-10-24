@@ -1,6 +1,8 @@
 # analysisrun
 解析メソッドのベースとなるヘルパーを提供します。
 
+多段解析の公開 API は [型付き Pipeline API](docs/pipeline.md) を参照してください。
+
 ## ライブラリ
 ### インストール方法
 ```shell

@@ -1,4 +1,4 @@
-"""Internal Pipeline engine; public builders and ExecutionContext wiring come later.
+"""Typed, immutable Pipeline builders and the internal execution engine.
 
 Executors must finish (including worker collection) before execute returns or raises.
 The runner keeps its snapshot alive until then. Values and synthesized objects are
@@ -10,12 +10,17 @@ from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import pandas as pd
+from pydantic import BaseModel
 
 from .pipeable import Output, PreprocessArgs
 from .typing import NamedTupleLike
+
+if TYPE_CHECKING:
+    from .pipeable import ExecutionContext
+
 
 type Inputs = NamedTupleLike[pd.DataFrame]
 
@@ -59,22 +64,26 @@ class MapSegment:
 
 
 @dataclass
-class MapArgs:
-    params: Any
+class MapArgs[P: BaseModel, I: Inputs, V, S]:
+    """One lane: prepared input, current value and shared synthesized result."""
+
+    params: P
     data_name: str
     sample_name: str
-    image_analysis_results: Inputs
-    value: Any
-    synthesized: Any
+    image_analysis_results: I
+    value: V
+    synthesized: S
     output: Output
 
 
 @dataclass
-class SynthesizeArgs:
-    params: Any
-    image_analysis_results: Mapping[str, Inputs]
-    values: Mapping[str, Any]
-    synthesized: Any
+class SynthesizeArgs[P: BaseModel, I: Inputs, V, S]:
+    """All lanes keyed by data_name; only synthesize replaces the shared result."""
+
+    params: P
+    image_analysis_results: Mapping[str, I]
+    values: Mapping[str, V]
+    synthesized: S
 
 
 class InputSnapshot(Protocol):
@@ -325,3 +334,75 @@ def execute_sequential(
         map_executor=SequentialMapExecutor(),
         snapshot_factory=dataframe_snapshot,
     )
+
+
+@dataclass(frozen=True)
+class PipelineBuilder[P: BaseModel, I: Inputs, V, S]:
+    """An immutable definition; map updates V and synthesize updates S.
+
+    Only InitialPipeline offers preprocess. Callbacks run only at finalize.
+    Type arguments are static contracts, never recovered from pickle at runtime.
+    Parallel boundary values must be pickleable; callbacks without annotations
+    remain supported, with correspondingly weaker static guarantees.
+    """
+
+    _context: "ExecutionContext[P, Any]"
+    _stages: tuple[Stage, ...]
+
+    def map[N](
+        self, func: Callable[[MapArgs[P, I, V, S]], N]
+    ) -> "PipelineBuilder[P, I, N, S]":
+        """Append a lane transformation, preserving input and synthesized types."""
+        return PipelineBuilder(self._context, (*self._stages, Stage("map", func)))
+
+    def synthesize[N](
+        self, func: Callable[[SynthesizeArgs[P, I, V, S]], N]
+    ) -> "PipelineBuilder[P, I, V, N]":
+        """Append a shared-result replacement, preserving current lane values."""
+        return PipelineBuilder(
+            self._context, (*self._stages, Stage("synthesize", func))
+        )
+
+    def finalize(
+        self, func: Callable[[SynthesizeArgs[P, I, V, S]], pd.DataFrame]
+    ) -> pd.DataFrame:
+        """Run this definition with a terminal DataFrame callback.
+
+        Streaming and worker execution send their response and exit instead.
+        Reusing a definition starts an independent execution, including preprocess.
+        """
+        return self._context._execute_pipeline((*self._stages, Stage("finalize", func)))
+
+
+@dataclass(frozen=True)
+class InitialPipeline[P: BaseModel, I: Inputs]:
+    """An empty definition that alone permits one leading preprocess.
+
+    Branches are independent: this initial builder is reusable and not consumed.
+    """
+
+    _context: "ExecutionContext[P, I]"
+
+    def preprocess[J: Inputs](
+        self, func: Callable[[PreprocessArgs[P, I]], J]
+    ) -> PipelineBuilder[P, J, None, None]:
+        """Transform the whole input once before splitting it into fixed lanes."""
+        return PipelineBuilder(self._context, (Stage("preprocess", func),))
+
+    def map[V](
+        self, func: Callable[[MapArgs[P, I, None, None]], V]
+    ) -> PipelineBuilder[P, I, V, None]:
+        """Append the first lane transformation; both initial values are None."""
+        return PipelineBuilder(self._context, (Stage("map", func),))
+
+    def synthesize[S](
+        self, func: Callable[[SynthesizeArgs[P, I, None, None]], S]
+    ) -> PipelineBuilder[P, I, None, S]:
+        """Append the first shared-result replacement."""
+        return PipelineBuilder(self._context, (Stage("synthesize", func),))
+
+    def finalize(
+        self, func: Callable[[SynthesizeArgs[P, I, None, None]], pd.DataFrame]
+    ) -> pd.DataFrame:
+        """Execute without map or synthesize stages, using None initial values."""
+        return self._context._execute_pipeline((Stage("finalize", func),))

@@ -14,6 +14,7 @@ from threading import Lock, Thread
 from types import MappingProxyType
 from typing import (
     IO,
+    TYPE_CHECKING,
     Any,
     ClassVar,
     Literal,
@@ -45,6 +46,9 @@ from analysisrun.tar import (
     read_tar_as_dict,
 )
 from analysisrun.typing import NamedTupleLike, VirtualFileLike
+
+if TYPE_CHECKING:
+    from .pipeline import InitialPipeline, Stage
 
 
 class Output(Protocol):
@@ -446,7 +450,12 @@ class _ParallelStreamingState(_BaseState):
 
 
 @dataclass
-class AnalysisContext[
+class _PipelineWorkerState(_BaseState):
+    pass
+
+
+@dataclass
+class ExecutionContext[
     Params: BaseModel,
     ImageAnalysisResults: NamedTupleLike[pd.DataFrame],
 ]:
@@ -463,18 +472,23 @@ class AnalysisContext[
         | _SequentialState
         | _ParallelState
         | _ParallelStreamingState
+        | _PipelineWorkerState
     )
+    _pipeline_inputs: ImageAnalysisResults | None = None
 
     @property
     def mode(
         self,
     ) -> Literal[
+        "pipeline-worker",
         "analyze-seq",
         "sequential",
         "parallel-entrypoint",
         "parallel-entrypoint-streaming",
     ]:
         match self.state:
+            case _PipelineWorkerState():
+                return "pipeline-worker"
             case _AnalyzeSeqState():
                 return "analyze-seq"
             case _SequentialState():
@@ -483,6 +497,38 @@ class AnalysisContext[
                 return "parallel-entrypoint"
             case _ParallelStreamingState():
                 return "parallel-entrypoint-streaming"
+
+    def pipeline(self) -> "InitialPipeline[Params, ImageAnalysisResults]":
+        """Start an immutable typed pipeline; callbacks execute at finalize()."""
+        from .pipeline import InitialPipeline
+
+        return InitialPipeline(self)
+
+    def _execute_pipeline(self, stages: tuple["Stage", ...]) -> pd.DataFrame:
+        from .pipeline_parallel import execute_entrypoint
+
+        state = self.state
+        if isinstance(state, _AnalyzeSeqState):
+            raise TypeError("pipeline does not support legacy analyzeseq mode")
+        entrypoint = (
+            state.entrypoint
+            if isinstance(state, (_ParallelState, _ParallelStreamingState))
+            else get_entrypoint() or Path(".")
+        )
+        return execute_entrypoint(
+            stages,
+            entrypoint=entrypoint,
+            params=self.params,
+            image_analysis_results=self._pipeline_inputs,
+            targets=None
+            if isinstance(state, _PipelineWorkerState)
+            else dict(state.sample_pairs),
+            output=self.output,
+            output_dir=getattr(state, "output_dir", None),
+            mode=self.mode,
+            stdout=state.stdout,
+            stderr=state.stderr,
+        )
 
     def run_analysis(
         self,
@@ -546,7 +592,10 @@ class AnalysisContext[
             ],
             pd.Series,
         ],
-        postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None = None,
+        postprocess: Callable[
+            [PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame
+        ]
+        | None = None,
     ) -> pd.DataFrame:
         """
         read_contextで読み込んだコンテキストに基づいて、preprocess -> analyze -> postprocess の順で数値解析を実行する。
@@ -945,7 +994,10 @@ class AnalysisContext[
             [PreprocessArgs[Params, ImageAnalysisResults]],
             ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
-        postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None,
+        postprocess: Callable[
+            [PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame
+        ]
+        | None,
     ) -> pd.DataFrame:
         if not isinstance(self.state, _ParallelState):
             raise TypeError("Expected _ParallelState for this analysis mode")
@@ -1084,7 +1136,10 @@ class AnalysisContext[
             [PreprocessArgs[Params, ImageAnalysisResults]],
             ProcessedInputs[PreprocessedImageAnalysisResults, Extra],
         ],
-        postprocess: Callable[[PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame] | None,
+        postprocess: Callable[
+            [PostprocessArgsWithPreprocess[Params, Extra]], pd.DataFrame
+        ]
+        | None,
         stdout: IO[bytes],
         stderr: IO[bytes],
     ) -> pd.DataFrame:
@@ -1478,9 +1533,9 @@ def read_context[
     stdin: IO[bytes] | None = None,
     stdout: IO[bytes] | None = None,
     output_dir: str | Path | None = None,
-) -> AnalysisContext[Params, ImageAnalysisResults]:
+) -> ExecutionContext[Params, ImageAnalysisResults]:
     """
-    引数、環境変数、標準入力を読み取り、実行モードに応じたAnalysisContextを構築する。
+    引数、環境変数、標準入力を読み取り、実行モードに応じたExecutionContextを構築する。
 
     `ANALYSISRUN_MODE` と対話環境の有無に応じて、
     analyze-seq / sequential / parallel-entrypoint / parallel-entrypoint-streaming
@@ -1493,13 +1548,23 @@ def read_context[
     :param stdout: 標準出力
     :param output_dir: ローカル実行する際の画像データの出力先ディレクトリ。
         画像解析結果がファイルパスで与えられる場合にはそのファイルが存在するディレクトリ、それ以外はカレントディレクトリがデフォルト値となる。
-    :return: AnalysisContextオブジェクト
+    :return: ExecutionContextオブジェクト
     """
     _stdin: IO[bytes] = stdin or sys.stdin.buffer
     _stdout: IO[bytes] = stdout or sys.stdout.buffer
     _stderr: IO[bytes] = sys.stderr.buffer
     interactivity = get_interactivity()
     env_mode = os.getenv("ANALYSISRUN_MODE")
+
+    if env_mode == "pipeline-worker":
+        # Rebuild only the definition. Actual params/inputs arrive via the trusted
+        # worker protocol at finalize; do not read or validate parent input here.
+        return ExecutionContext(
+            params=None,  # type: ignore[arg-type]
+            image_analysis_results=image_analysis_results,
+            output=_NullOutput(),
+            state=_PipelineWorkerState(stdout=_stdout, stderr=_stderr),
+        )
 
     try:
         specs = _get_image_analysis_specs(image_analysis_results)
@@ -1537,7 +1602,7 @@ def read_context[
                 _stderr,
                 exc,
             )
-        return AnalysisContext[Params, ImageAnalysisResults](
+        return ExecutionContext[Params, ImageAnalysisResults](
             params=parsed.params,
             image_analysis_results=image_analysis_results,
             output=_NullOutput(),
@@ -1644,13 +1709,18 @@ def read_context[
         field_numbers,
     )
 
+    pipeline_inputs = image_analysis_results(
+        **{name: lanes.whole_data for name, lanes in cleansed_lanes.items()}
+    )
+
     if mode == "sequential":
         if output_dir_path is None:
             output_dir_path = _derive_output_dir(runtime_input.image_analysis_results)
         output_dir_path.mkdir(parents=True, exist_ok=True)
         output_impl = _FileOutput(output_dir_path)
-        return AnalysisContext[Params, ImageAnalysisResults](
+        return ExecutionContext[Params, ImageAnalysisResults](
             params=runtime_input.params,
+            _pipeline_inputs=pipeline_inputs,
             image_analysis_results=image_analysis_results,
             output=output_impl,
             state=_SequentialState(
@@ -1676,8 +1746,9 @@ def read_context[
             output_dir_path = _derive_output_dir(runtime_input.image_analysis_results)
         output_dir_path.mkdir(parents=True, exist_ok=True)
         output_impl = _FileOutput(output_dir_path)
-        return AnalysisContext[Params, ImageAnalysisResults](
+        return ExecutionContext[Params, ImageAnalysisResults](
             params=runtime_input.params,
+            _pipeline_inputs=pipeline_inputs,
             image_analysis_results=image_analysis_results,
             output=output_impl,
             state=_ParallelState(
@@ -1692,8 +1763,9 @@ def read_context[
             ),
         )
 
-    return AnalysisContext[Params, ImageAnalysisResults](
+    return ExecutionContext[Params, ImageAnalysisResults](
         params=runtime_input.params,
+        _pipeline_inputs=pipeline_inputs,
         image_analysis_results=image_analysis_results,
         output=_NullOutput(),
         state=_ParallelStreamingState(

@@ -2,7 +2,8 @@
 
 `src/analysisrun/pipeline.py` は、[#81](pipeline.md) のステージ列と
 [#82](pipeline-transfer.md) の状態契約を実行する内部エンジン。
-公開ビルダー、ExecutionContext への接続、既存 API の移行は後続 Issue で行う。
+公開ビルダーと ExecutionContext への接続は #86 で実装した。
+[公開 API](../pipeline.md) を参照。既存 API の移行は #87 で行う。
 既存の `run_analysis` / `run_analysis_with_preprocess` は変更しない。
 
 ## 呼び出しと責務
@@ -28,8 +29,8 @@ result = execute_sequential(
 Runner は定義を検証して対象順に連続した内部レーン ID を割り当てる。
 preprocess はコピーした全体入力、deepcopy した params、外側 read-only の targets
 を既存 PreprocessArgs で受け取る。戻り値の NamedTupleLike を後続入力とする。
-map / synthesize / finalize 用の Args は設計のフィールドを持つ内部型であり、
-公開ジェネリック型の実装は #86 に委ねる。
+map / synthesize / finalize 用の Args は #86 で公開ジェネリック型になった。
+内部 Stage / Runner / Executor は型を消去して実行する。
 
 `execute_pipeline` には MapExecutor と SnapshotFactory を個別に渡す。
 `execute_sequential` は SequentialMapExecutor と dataframe_snapshot を組み合わせる。
