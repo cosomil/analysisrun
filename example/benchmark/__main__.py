@@ -14,8 +14,6 @@ GOLDEN_DIR = REPO_ROOT / "example" / "benchmark" / "golden"
 IMAGE_ANALYSIS_RESULT = REPO_ROOT / "tests" / "testdata" / "image_analysis_result.csv"
 SAMPLES_CSV = REPO_ROOT / "tests" / "testdata" / "samples.csv"
 
-print(sys.executable)
-
 
 def _list_files(dir_path: Path) -> list[Path]:
     return sorted([p for p in dir_path.iterdir() if p.is_file()], key=lambda p: p.name)
@@ -68,8 +66,10 @@ def _run_one(*, mode: str) -> float:
         env["ANALYSISRUN_INTERACTIVITY"] = (
             "notebook" if mode == "sequential" else "terminal"
         )
+        # Notebook の標準出力は画面表示のみ。期待画像との比較用に保存する。
+        env["ANALYSISRUN_BENCHMARK_SAVE_IMAGES"] = str(int(mode == "sequential"))
 
-        cmd = ["uv", "run", SCRIPT]
+        cmd = [sys.executable, str(SCRIPT)]
         t0 = time.perf_counter()
         proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, check=False)
         t1 = time.perf_counter()

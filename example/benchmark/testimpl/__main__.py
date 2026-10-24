@@ -1,12 +1,13 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, LiteralString, NamedTuple
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.figure import Figure
 from pydantic import BaseModel
 
 import analysisrun as ar
@@ -69,6 +70,17 @@ def _field_id(df_field: pd.DataFrame) -> int:
         return -1
 
 
+def save_benchmark_image(
+    fig: Figure, name: str, image_type: LiteralString, **kwargs: Any
+) -> None:
+    """逐次実行でも並列実行と同じ保存処理を計測・比較する。"""
+    output_dir = Path(os.environ["ANALYSISRUN_OUTPUT_DIR"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_dir / name, **kwargs)
+    fig.clear()
+    plt.close(fig)
+
+
 def analyze(
     args: ar.MapArgs[BenchParameters, BenchImageAnalysisResults, None, None],
 ) -> dict[str, object]:
@@ -76,6 +88,8 @@ def analyze(
     df = args.image_analysis_results.activity_spots
     fields = ar.scan_fields(df, args.data_name)
     output = args.output
+    if os.environ.get("ANALYSISRUN_BENCHMARK_SAVE_IMAGES") == "1":
+        output = save_benchmark_image
 
     series_by_field: list[np.ndarray] = []
     scatter_samples: list[tuple[np.ndarray, np.ndarray, int]] = []
@@ -191,26 +205,30 @@ def postprocess(
     return result
 
 
-test_dir = Path(__file__).parent.parent.parent.parent.resolve() / "tests"
-env_output_dir = os.getenv("ANALYSISRUN_OUTPUT_DIR")
-output_dir = (
-    Path(env_output_dir) if env_output_dir else Path(__file__).parent.parent / "golden"
-)
-output_dir.mkdir(parents=True, exist_ok=True)
+def main(params: BenchParameters | None = None) -> pd.DataFrame:
+    test_dir = Path(__file__).resolve().parents[3] / "tests"
+    env_output_dir = os.getenv("ANALYSISRUN_OUTPUT_DIR")
+    output_dir = (
+        Path(env_output_dir)
+        if env_output_dir
+        else Path(__file__).parent.parent / "golden"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-# 入力の読み取りと、Runnerの決定を行う
-ctx = ar.read_context(
-    BenchParameters,
-    BenchImageAnalysisResults,
-    manual_input=ar.ManualInput(
-        BenchParameters(),
-        {
-            "activity_spots": test_dir / "testdata" / "image_analysis_result.csv",
-        },
-        sample_names=test_dir / "testdata" / "samples.csv",
-    ),
-    output_dir=output_dir,
-)
-results = ctx.pipeline().map(analyze).finalize(postprocess)
+    ctx = ar.read_context(
+        BenchParameters,
+        BenchImageAnalysisResults,
+        manual_input=ar.ManualInput(
+            params or BenchParameters(),
+            {"activity_spots": test_dir / "testdata" / "image_analysis_result.csv"},
+            sample_names=test_dir / "testdata" / "samples.csv",
+        ),
+        output_dir=output_dir,
+    )
+    results = ctx.pipeline().map(analyze).finalize(postprocess)
+    results.to_csv(output_dir / "result.csv", index=False)
+    return results
 
-results.to_csv(output_dir / "result.csv", index=False)
+
+if __name__ == "__main__":
+    main()

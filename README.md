@@ -3,6 +3,24 @@
 
 多段解析の公開 API は [型付き Pipeline API](docs/pipeline.md) を参照してください。
 
+`read_context() → ctx.pipeline() → finalize()` で、レーンごとの `map` と
+全レーンを集約する `synthesize` を組み合わせます。集約結果は次のステージの
+`args.synthesized` に渡されます。
+
+```python
+result = (
+    ctx.pipeline()
+    .synthesize(calculate_reference)
+    .map(analyze)
+    .synthesize(evaluate_qc)
+    .map(apply_qc_evaluation)
+    .finalize(to_dataframe)
+)
+```
+
+[QC フィードバックの実例](example/qc-feedback/README.md) では、共通基準値で解析し、
+QC サンプルの判定を全レーンへ戻してから最終画像を生成します。
+
 ## ライブラリ
 ### インストール方法
 ```shell
@@ -92,9 +110,9 @@ result = ctx.pipeline().map(analyze).finalize(postprocess)
 result.to_csv(project_root / "output" / "result.csv", index=False)
 ```
 
-### 多段 Pipeline のエラーと出力（内部実行 API）
+### 多段 Pipeline のエラーと出力
 
-`pipeline.execute_sequential` / `pipeline_entrypoint.execute_entrypoint` では、
+`read_context() → ctx.pipeline() → finalize()` では、
 最初の失敗で後続ステージを中断します。並列実行では Worker を停止・回収してから
 例外を通知し、失敗時に最終 DataFrame は返しません。
 
