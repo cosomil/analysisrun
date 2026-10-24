@@ -1,6 +1,9 @@
 # Pipeline の構築・実行モデル（#81）
 
 対象: [#81](https://github.com/cosomil/analysisrun/issues/81)、親: [#78](https://github.com/cosomil/analysisrun/issues/78)。
+状態所有権・転送・連続 map の Map Segment 化は [#82 の契約](pipeline-transfer.md) を参照。
+同書が本書の単一 stage_index と連続 map 間のバリア案を更新する。
+
 これは将来の公開 API の設計決定であり、以下の型・メソッドはまだ公開していない。
 本変更で追加するコードは `tests/pipeline_probe.py` の独立実験のみ。
 
