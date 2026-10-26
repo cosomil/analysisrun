@@ -742,11 +742,12 @@ def _write_streaming_result_entries(
     result_df: pd.DataFrame,
 ) -> None:
     csv_buf = BytesIO()
+    missing = result_df.isna()
     result_df = result_df.astype(str)
     result_df.to_csv(csv_buf, index=False)
     _add_tar_binary_entry(tar, "result_csv", csv_buf.getvalue())
 
-    for idx, row in result_df.iterrows():
+    for position, (idx, row) in enumerate(result_df.iterrows()):
         data_name = row.get("data", idx)
-        json_bytes = row.to_json().encode("utf-8")
+        json_bytes = row.mask(missing.iloc[position], None).to_json().encode("utf-8")
         _add_tar_binary_entry(tar, f"{data_name!s}/result_json", json_bytes)

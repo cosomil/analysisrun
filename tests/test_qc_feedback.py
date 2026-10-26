@@ -10,6 +10,7 @@ import tarfile
 import traceback
 from io import BytesIO
 from pathlib import Path
+from typing import Any, NoReturn
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -141,7 +142,7 @@ def test_qc_feedback_outputs(
         monkeypatch.setenv("QC_OUTPUT_DIR", str(tmp_path / "output"))
         shown = []
 
-        def show(*, block=None):
+        def show(*, block: bool | None = None) -> None:
             shown.append(plt.gcf())
 
         monkeypatch.setattr(plt, "show", show)
@@ -192,7 +193,7 @@ def test_qc_notebook_preserves_original_exception(
     original = example.apply_qc_evaluation
     error = LookupError("QC report failure after output")
 
-    def fail(args):
+    def fail(args: Any) -> NoReturn:
         original(args)
         raise error
 
