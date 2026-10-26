@@ -1,5 +1,40 @@
 # Changelog
 
+## [v0.0.7](https://github.com/cosomil/analysisrun/compare/v0.0.6...v0.0.7) - 2026-10-26
+
+- feat(analysisrun): Entity列を複数の値でフィルタリングできるようにする by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/41
+- feat(analysisrun): interactiveモジュールのブラッシュアップ  by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/43
+- feat(analysisrun): スクリプトの実行環境の情報を取得する内部用ユーティリティを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/44
+- feat(analysisrun): NamedTupleLikeを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/45
+- feat(analysisrun): マルチバイト文字対応のcowsayを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/46
+- Redirect stdout to stderr during analysis/postprocess execution by @daichitakahashi with @Copilot in https://github.com/cosomil/analysisrun/pull/48
+- Add double quote trimming to VirtualFile, FilePath, and DirectoryPath by @daichitakahashi with @Copilot in https://github.com/cosomil/analysisrun/pull/51
+- feat(analysisrun): scan_model_input中断時のメッセージを改善 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/52
+- 標準入力から入力を受け取るPipeableRunnerの実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/57
+- Pipeable by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/47
+- chore: 不要になったスクリプトを削除しREADMEを更新 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/58
+- feat(analysisrun): ユーザー入力にquestionaryを使用 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/59
+- feat(anaiysisrun): "showschema"モードを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/64
+- docs(analiysisrun): docstringを更新 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/61
+- feat(analysisrun): scanner.scanを実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/65
+- fix(analysisrun): デフォルトで解析結果に追加するデータ名の列名を変更 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/66
+- feat(analysisrun): preprocessの役割を整理 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/67
+- feat(analysisrun): DirectoryPathの入力メソッドを"path"に変更 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/69
+- cleansingに欠損値除去を追加 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/72
+- feat(analysisrun): タイムゾーン付き日付文字列作成ヘルパー実装 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/73
+- feat: update dependencies by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/76
+- analysisrun: assertの利用を削除 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/79
+- update tagpr(v1.21.2) by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/80
+- Pipeline の構築・実行モデルと preprocess の先頭限定 API を設計する by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/89
+- Pipeline の状態・転送契約を設計し親子プロセス間の転送を検証する by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/90
+- Pipeline の共通 Runner と逐次実行エンジンを実装する by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/92
+- Pipeline の map 並列実行と同期バリアを実装する (#84) by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/93
+- Pipeline のエラー診断と出力のセマンティクスを整備する  by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/94
+- Pipeline の公開 API とジェネリック型検証を完成させる (#86) by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/95
+- Pipeline transition by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/96
+- QC フィードバックの実例・E2E テスト・ドキュメントを追加 (#88) by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/97
+- Document streaming protocol and preserve JSON missing values by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/99
+
 ## [v0.0.6](https://github.com/cosomil/analysisrun/compare/v0.0.5...v0.0.6) - 2025-06-16
 - docs by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/37
 - fix: マングリングエラーとpickleエラーを解消 by @daichitakahashi in https://github.com/cosomil/analysisrun/pull/39
