@@ -2,6 +2,8 @@
 解析メソッドのベースとなるヘルパーを提供します。
 
 多段解析の公開 API は [型付き Pipeline API](docs/pipeline.md) を参照してください。
+外部プログラムから利用する stdin / stdout の契約と実行例は
+[Streaming 入出力プロトコル](docs/streaming.md) を参照してください。
 
 `read_context() → ctx.pipeline() → finalize()` で、レーンごとの `map` と
 全レーンを集約する `synthesize` を組み合わせます。集約結果は次のステージの
@@ -131,7 +133,7 @@ result.to_csv(project_root / "output" / "result.csv", index=False)
   同一／別 map ステージから出力できません。別レーンの同名画像はパスが異なるため許可します。
   最終結果の `data` が重複する場合も `result_json` の名前重複で失敗します。
 - 外部 TAR の失敗時は部分出力に続けて最後のデータエントリ `error`（UTF-8 メッセージ）を
-  書き込み、TAR を正常終端して非ゼロ終了します。受信側は `error` の有無を必ず確認してください。
+  書き込み、TAR を正常終端して非ゼロ終了します。受信側は終了コードと `error` の有無を必ず確認してください。
   出力先の切断など、物理的に書き込みを完結できない障害はこの保証の対象外です。
 - ローカル保存先は従来どおり `output_dir / image_name` で、同名は上書きします。
   衝突回避は利用者の責務です。Notebook は指定された Output に委譲します。

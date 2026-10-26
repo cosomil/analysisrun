@@ -135,10 +135,13 @@ streaming の失敗は送信済み部分画像を保持し、最後に `error` �
 正常終端し、非ゼロ終了する。送信先の切断など、書き込み不能な障害は終端保証の対象外。
 表示・保存済みの画像や受理済みの値への変更はロールバックしない。
 
-streaming の最終出力は `result_csv` と `{data}/result_json`（値は文字列）、
+streaming の最終出力は `result_csv` と `{data}/result_json`（欠損値は `null`、他の値は文字列）、
 画像は `{data}/images/{image_name}`。最終結果を含む TAR エントリ名の重複はエラー。
 ローカル画像は `output_dir / image_name` に保存され、同名は上書きするため、
 ステージやレーンごとに名前を分ける。
+
+入力 TAR・schema・出力形式・終了コードとクライアントの実行例は
+[Streaming 入出力プロトコル](streaming.md) を参照。
 
 旧 `run_analysis` API は未リリースのため、互換ラッパーは提供しない。
 実行入口は `read_context()`、レーン処理は `map()`、全体集約は `synthesize()`、

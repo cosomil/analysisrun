@@ -44,9 +44,11 @@ uv run python -m example.qc-feedback < request.tar.gz > response.tar.gz
 入力 TAR は `params`（例: `{"minimum_score":0.8}`）、`sample_names`（CSV）、
 `image_analysis_results/measurements`（CSV）を格納し、CSV には PAX ヘッダー
 `is_file=true` を指定します。出力は `result_csv`、`{data}/result_json`、
-`{data}/images/{data}_qc.png` です。JSON の値は既存の出力契約により文字列になります。
+`{data}/images/{data}_qc.png` です。JSON の欠損値は `null`、他の値は文字列になります。
 失敗時は最終結果を返さず、送信済み画像に続いて最後の `error` エントリを出力し、非ゼロ終了します。
 受信側は終了コードと `error` の有無を確認してください。
+詳しい契約と実行できるクライアントは
+[Streaming 入出力プロトコル](../../docs/streaming.md) を参照してください。
 
 この例と同じエントリポイントを使用する [E2E](../../tests/test_qc_feedback.py) は、
 QC 全件合格・一部不合格・不在、1 / 2 / 3 / 4 レーンを各モードで検証します。
